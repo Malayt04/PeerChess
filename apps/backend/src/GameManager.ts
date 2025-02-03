@@ -1,5 +1,5 @@
 import { Game } from "./Game";
-import { INIT_GAME, MOVE } from "./message";
+import { ICE_CANDIDATE, INIT_GAME, MOVE, WEBRTC_ANSWER, WEBRTC_OFFER } from "./message";
 import WebSocket from "ws";
 
 export class GameManager{
@@ -24,6 +24,21 @@ export class GameManager{
         console.log("User removed")
     }
 
+    handleWebRTCMessage(sender: WebSocket, message: any) {
+        const game = this.games.find(game => 
+            game.playerOne === sender || game.playerTwo === sender
+        );
+
+        if (!game) return;
+
+        const receiver = game.playerOne === sender ? game.playerTwo : game.playerOne;
+        
+        receiver.send(JSON.stringify({
+            type: message.type,
+            payload: message.payload
+        }));
+    }
+
     addHandler(user: WebSocket){
         user.on('message', (message: string) => {
 
@@ -44,9 +59,13 @@ export class GameManager{
                 const game = this.games.find(game => game.playerOne === user || game.playerTwo === user);
                 if (game) {
                     console.log("inside if")
-                    console.log(data.move)
-                    game.makeMove(user, data.move);
+                    console.log(data.payload.move)
+                    game.makeMove(user, data.payload.move);
                 }
+            }
+
+            if ([WEBRTC_OFFER, WEBRTC_ANSWER, ICE_CANDIDATE].includes(data.type)) {
+                this.handleWebRTCMessage(user, data);
             }
         })
     }

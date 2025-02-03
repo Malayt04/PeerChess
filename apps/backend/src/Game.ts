@@ -1,6 +1,6 @@
 import { Chess } from "chess.js"
 import WebSocket from "ws"
-import { GAME_OVER, INIT_GAME, INVALID_MOVE, MOVE } from "./message"
+import { GAME_OVER, ICE_CANDIDATE, INIT_GAME, INVALID_MOVE, MOVE, WEBRTC_ANSWER, WEBRTC_OFFER } from "./message"
 import { move } from './types';
 
 
@@ -9,7 +9,8 @@ export class Game{
     playerTwo: WebSocket
     board: Chess
     moves: string[]
-    moveCount: number 
+    moveCount: number
+    gameId: string
 
     constructor(playerOne: WebSocket, playerTwo: WebSocket){
         this.playerOne = playerOne
@@ -17,19 +18,43 @@ export class Game{
         this.board = new Chess()
         this.moves = []
         this.moveCount = 0
+        this.gameId = new Date().getTime().toString()
         this.playerOne.send(JSON.stringify({
             type:  INIT_GAME,
             payload: {
-                color: "white"
+                color: "white",
+                gameId: this.gameId
             }
         }))
 
         this.playerTwo.send(JSON.stringify({
             type:  INIT_GAME,
             payload: {
-                color: "black"
+                color: "black",
+                gameId: this.gameId
             }
         }))
+
+        this.setupWebRTCForwarding();
+    }
+
+    private setupWebRTCForwarding() {
+        // Forward WebRTC messages between players
+        const forwardToPeer = (sender: WebSocket, receiver: WebSocket) => {
+            sender.on('message', (data: string) => {
+                const message = JSON.parse(data);
+                if ([WEBRTC_OFFER, WEBRTC_ANSWER, ICE_CANDIDATE].includes(message.type)) {
+                    console.log(message)
+                    receiver.send(JSON.stringify({
+                        type: message.type,
+                        payload: message.payload
+                    }));
+                }
+            });
+        };
+
+        forwardToPeer(this.playerOne, this.playerTwo);
+        forwardToPeer(this.playerTwo, this.playerOne);
     }
 
     makeMove(user: WebSocket, move: move) {
@@ -87,14 +112,14 @@ export class Game{
         this.playerOne.send(
             JSON.stringify({
                 type: MOVE,
-                payload: move,
+                payload: {move},
             })
         );
     
         this.playerTwo.send(
             JSON.stringify({
                 type: MOVE,
-                payload: move,
+                payload: {move},
             })
         );
     
