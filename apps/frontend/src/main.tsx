@@ -12,6 +12,5 @@ createRoot(document.getElementById('root')!).render(
         </div>
       </main>
     </div>
-    <App />
 </>
 )

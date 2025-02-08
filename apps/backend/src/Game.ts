@@ -38,7 +38,7 @@ export class Game{
         this.setupWebRTCForwarding();
     }
 
-    private setupWebRTCForwarding() {
+     setupWebRTCForwarding() {
         // Forward WebRTC messages between players
         const forwardToPeer = (sender: WebSocket, receiver: WebSocket) => {
             sender.on('message', (data: string) => {
