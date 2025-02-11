@@ -4,6 +4,7 @@ import { Chess } from 'chess.js';
 import { Chessboard } from 'react-chessboard';
 import { useEffect, useState, useCallback, useRef } from 'react';
 
+
 const configuration = {
     iceServers: [
         { urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] },
@@ -13,6 +14,7 @@ const configuration = {
 
 function Game() {
     const socket = useSocket();
+    console.log(socket)
     const [chess, setChess] = useState(new Chess());
     const [started, setStarted] = useState(false);
     const colorRef = useRef<string>('white');
@@ -24,6 +26,7 @@ function Game() {
     const remoteVideoRef = useRef<HTMLVideoElement>(null);
     const pcRef = useRef<RTCPeerConnection | null>(null);
     const localStreamRef = useRef<MediaStream | null>(null);
+    const socketRef = useRef<WebSocket | null>(null);
 
     const handleMessage = useCallback(async (event: MessageEvent) => {
         const data = JSON.parse(event.data);
@@ -33,7 +36,6 @@ function Game() {
             case 'INIT_GAME':
                 colorRef.current = data.payload.color;
                 setStarted(true);
-                await initializeWebRTC();
                 break;
 
             case 'MOVE':
@@ -73,9 +75,11 @@ function Game() {
 
     useEffect(() => {
         if (!socket) return;
-
+        
+        console.log(socket)
+        socketRef.current = socket
         socket.addEventListener('message', handleMessage);
-        return () => socket.removeEventListener('message', handleMessage);
+
     }, [socket, handleMessage]);
 
     
@@ -137,14 +141,14 @@ function Game() {
                         const offer = await pc.createOffer();
                         console.log('Sending offer:', offer);
                         await pc.setLocalDescription(offer);
-                        if (socket?.readyState === WebSocket.OPEN) {
-                            socket.send(JSON.stringify({
+
+                        console.log(socket)
+
+                            socket?.send(JSON.stringify({
                                 type: 'WEBRTC_OFFER',
                                 payload: offer,
                             }));
-                        } else {
-                            console.error('WebSocket not ready for sending offer');
-                        }
+
                     } catch (err) {
                         console.error('Error creating offer:', err);
                         setError('Failed to create offer');
@@ -159,16 +163,25 @@ function Game() {
 
     const handleOffer = async (offer: RTCSessionDescriptionInit) => {
         if (!pcRef.current) return;
+        const activeSocket = socketRef.current;
+
+        if (!activeSocket) {
+            console.error("WebSocket is not available when handling the offer");
+            return;
+        }
 
         try {
+            console.log("................................................................................................................................................................")
             console.log('Setting remote description (offer):', offer);
             await pcRef.current.setRemoteDescription(offer);
             const answer = await pcRef.current.createAnswer();
             console.log('Sending answer:', answer);
             await pcRef.current.setLocalDescription(answer);
 
-            if (socket?.readyState === WebSocket.OPEN) {
-                socket.send(JSON.stringify({
+            console.log("Socket value: ", socket)
+
+            if (activeSocket?.readyState === WebSocket.OPEN) {
+                activeSocket.send(JSON.stringify({
                     type: 'WEBRTC_ANSWER',
                     payload: answer,
                 }));
@@ -183,15 +196,28 @@ function Game() {
 
     const handleAnswer = async (answer: RTCSessionDescriptionInit) => {
         if (!pcRef.current) return;
+    
         try {
-            console.log('Setting remote description (answer):', answer);
+            console.log("answer received: ........................", answer)
+            console.log("Current Signaling State:", pcRef.current.signalingState);
+    
+            if (pcRef.current.signalingState !== "have-local-offer") {
+                console.error(
+                    "Invalid state for setting remote answer:",
+                    pcRef.current.signalingState
+                );
+                return;
+            }
+    
+            console.log("Setting remote description (answer):", answer);
             await pcRef.current.setRemoteDescription(answer);
+    
         } catch (err) {
-            console.error('Error setting remote description:', err);
-            setError('Failed to set remote description');
+            console.error("Error setting remote description:", err);
+            setError("Failed to set remote description");
         }
     };
-
+    
     const handleIceCandidate = async (candidate: RTCIceCandidateInit) => {
         if (!pcRef.current) return;
         try {
@@ -227,13 +253,15 @@ function Game() {
     }, [chess, makeMove]);
 
     const handlePlay = useCallback(() => {
-        if (socket?.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ type: 'INIT_GAME' }));
-        } else {
-            console.error('WebSocket not ready for game initialization');
+        if (!socket) {
+            console.error("WebSocket not connected yet.");
+            return;
         }
+    
+        socket.send(JSON.stringify({ type: 'INIT_GAME' }));
+        
+        initializeWebRTC();
     }, [socket]);
-
     useEffect(() => {
         return () => {
             if (pcRef.current) {

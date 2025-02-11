@@ -3,7 +3,7 @@ import { ICE_CANDIDATE, INIT_GAME, MOVE, WEBRTC_ANSWER, WEBRTC_OFFER } from "./m
 import WebSocket from "ws";
 
 export class GameManager{
-    games: Game[]
+    games:Game[]
     users: WebSocket[]
     pendingUser: WebSocket | null
 

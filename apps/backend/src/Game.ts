@@ -35,6 +35,8 @@ export class Game{
             }
         }))
 
+        console.log("webrtc setup")
+
         this.setupWebRTCForwarding();
     }
 
@@ -43,12 +45,15 @@ export class Game{
         const forwardToPeer = (sender: WebSocket, receiver: WebSocket) => {
             sender.on('message', (data: string) => {
                 const message = JSON.parse(data);
+                console.log(data)
                 if ([WEBRTC_OFFER, WEBRTC_ANSWER, ICE_CANDIDATE].includes(message.type)) {
                     console.log(message)
                     receiver.send(JSON.stringify({
                         type: message.type,
                         payload: message.payload
                     }));
+                }else{
+                    return
                 }
             });
         };
