@@ -3,6 +3,7 @@ import { useSocket } from '@/hooks/useSocket';
 import { Chess } from 'chess.js';
 import { Chessboard } from 'react-chessboard';
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { AlertDialog, AlertDialogAction, AlertDialogContent, AlertDialogTitle } from '@radix-ui/react-alert-dialog';
 
 
 const configuration = {
@@ -44,6 +45,11 @@ function Game() {
                     newChess.move(data.payload.move);
                     return newChess;
                 });
+                break;
+
+            case 'GAME_OVER':
+                setStarted(false);
+                handleGameOver(data.payload.winner)
                 break;
 
             case 'WEBRTC_OFFER':
@@ -273,6 +279,31 @@ function Game() {
         };
     }, []);
 
+    const handleResign = () => {
+        if (socket?.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({
+                type: 'GAME_OVER',
+                payload: {
+                    winner: colorRef.current === 'white' ? 'black' : 'white',
+                },
+            }))
+
+            handleGameOver(colorRef.current === 'white' ? 'black' : 'white')
+        }
+    }
+
+    const handleGameOver = (winner: string) => {
+        return (
+            <AlertDialog>
+                <AlertDialogContent>
+                    <AlertDialogTitle>Game Over</AlertDialogTitle>
+                    <AlertDialogContent>{winner} won</AlertDialogContent>
+                    <AlertDialogAction>Next Game</AlertDialogAction>
+                </AlertDialogContent>
+            </AlertDialog>
+        )
+    }
+
     return (
         <div className="flex flex-col min-h-screen bg-[#312E2B] text-white p-4">
         {error && <div className="bg-red-500 text-white p-4 mb-4 rounded">{error}</div>}
@@ -309,6 +340,14 @@ function Game() {
                 className="px-8 py-4 text-lg bg-yellow-400 hover:bg-yellow-500 text-[#312E2B] transition-colors rounded-full"
             >
                 {!socket ? "Connecting..." : started ? "Game Started" : "Start Match"}
+            </Button>
+
+            <Button
+                onClick={handleResign}
+                disabled = {!socket}
+                className="px-8 py-4 text-lg bg-red-400 hover:bg-red-500 text-[#312E2B] transition-colors rounded-full"
+            >
+                Resign
             </Button>
 
             <div className="text-center text-gray-300">Connection State: {connectionState}</div>
