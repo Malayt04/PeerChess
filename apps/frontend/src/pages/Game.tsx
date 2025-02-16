@@ -3,7 +3,7 @@ import { useSocket } from '@/hooks/useSocket';
 import { Chess } from 'chess.js';
 import { Chessboard } from 'react-chessboard';
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { AlertDialog, AlertDialogAction, AlertDialogContent, AlertDialogTitle } from '@radix-ui/react-alert-dialog';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogTitle } from '@radix-ui/react-alert-dialog';
 
 
 const configuration = {
@@ -20,7 +20,7 @@ function Game() {
     const [started, setStarted] = useState(false);
     const colorRef = useRef<string>('white');
     const [error, setError] = useState<string | null>(null);
-    const [connectionState, setConnectionState] = useState<RTCPeerConnectionState>('new');
+    const [resignDialogOpen, setResignDialogOpen] = useState(false);
     const [windowWidth, setWindowWidth] = useState(typeof window !== "undefined" ? window.innerWidth : 0)
 
     const localVideoRef = useRef<HTMLVideoElement>(null);
@@ -131,7 +131,6 @@ function Game() {
 
             pc.onconnectionstatechange = () => {
                 console.log('Connection state changed:', pc.connectionState);
-                setConnectionState(pc.connectionState);
             };
 
             pc.oniceconnectionstatechange = () => {
@@ -280,29 +279,25 @@ function Game() {
     }, []);
 
     const handleResign = () => {
+        setResignDialogOpen(true);
+    };
+
+    const confirmResign = () => {
+        const winner = colorRef.current === 'white' ? 'black' : 'white';
         if (socket?.readyState === WebSocket.OPEN) {
             socket.send(JSON.stringify({
                 type: 'GAME_OVER',
-                payload: {
-                    winner: colorRef.current === 'white' ? 'black' : 'white',
-                },
-            }))
-
-            handleGameOver(colorRef.current === 'white' ? 'black' : 'white')
+                payload: { winner },
+            }));
         }
-    }
+        handleGameOver(winner);
+    };
 
     const handleGameOver = (winner: string) => {
-        return (
-            <AlertDialog>
-                <AlertDialogContent>
-                    <AlertDialogTitle>Game Over</AlertDialogTitle>
-                    <AlertDialogContent>{winner} won</AlertDialogContent>
-                    <AlertDialogAction>Next Game</AlertDialogAction>
-                </AlertDialogContent>
-            </AlertDialog>
-        )
-    }
+        alert(`${winner} won the game.`);
+        setStarted(false);
+        setChess(new Chess());
+    };
 
     return (
         <div className="flex flex-col min-h-screen bg-[#312E2B] text-white p-4">
@@ -342,15 +337,28 @@ function Game() {
                 {!socket ? "Connecting..." : started ? "Game Started" : "Start Match"}
             </Button>
 
-            <Button
-                onClick={handleResign}
-                disabled = {!socket}
-                className="px-8 py-4 text-lg bg-red-400 hover:bg-red-500 text-[#312E2B] transition-colors rounded-full"
-            >
-                Resign
-            </Button>
+            <div className="flex flex-col items-center gap-4 mt-4">
+                <Button onClick={handleResign} disabled={!started} className="px-8 py-4 text-lg bg-red-400 hover:bg-red-500">
+                    Resign
+                </Button>
+            </div>
 
-            <div className="text-center text-gray-300">Connection State: {connectionState}</div>
+            <AlertDialog open={resignDialogOpen} onOpenChange={setResignDialogOpen}>
+                <AlertDialogContent>
+                    <AlertDialogTitle>Confirm Resignation</AlertDialogTitle>
+                    <AlertDialogDescription>
+                        Are you sure you want to resign? Your opponent will be declared the winner.
+                    </AlertDialogDescription>
+                    <div className="flex justify-end gap-4 mt-4">
+                        <AlertDialogCancel onClick={() => setResignDialogOpen(false)}>
+                            Cancel
+                        </AlertDialogCancel>
+                        <AlertDialogAction onClick={confirmResign}>
+                            Confirm
+                        </AlertDialogAction>
+                    </div>
+                </AlertDialogContent>
+            </AlertDialog>
         </div>
     </div>
 );
