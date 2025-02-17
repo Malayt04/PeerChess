@@ -305,6 +305,9 @@ function Game() {
 
         <div className="flex justify-center items-center flex-1">
             <div className="flex gap-4 items-center">
+                <div>
+                    <p className="text-2xl font-bold">Your turn: {colorRef.current}</p>
+                </div>
                 <div className="w-1/2 bg-gray-800 rounded-lg overflow-hidden aspect-video">
                     <video ref={localVideoRef} className="w-full h-full object-cover" autoPlay muted playsInline />
                 </div>
@@ -322,6 +325,9 @@ function Game() {
                     />
                 </div>
                 
+                <div>
+                    <p className="text-2xl font-bold">Your turn: {colorRef.current}</p>
+                </div>
                 <div className="w-1/2 bg-gray-800 rounded-lg overflow-hidden aspect-video">
                     <video ref={remoteVideoRef} className="w-full h-full object-cover" autoPlay playsInline />
                 </div>
