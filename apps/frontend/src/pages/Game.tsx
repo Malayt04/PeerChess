@@ -22,6 +22,21 @@ function Game() {
     const [error, setError] = useState<string | null>(null);
     const [resignDialogOpen, setResignDialogOpen] = useState(false);
     const [windowWidth, setWindowWidth] = useState(typeof window !== "undefined" ? window.innerWidth : 0)
+    const [whiteClock, setWhiteClock] = useState(600)
+    const [blackClock, setBlackClock] = useState(600)
+
+    const [messages, setMessages] = useState<Array<{text: string, sender: string, timestamp: string}>>([
+        {text: "Hello! Ready to play?", sender: "opponent", timestamp: "12:00 PM"},
+        {text: "Let's have a good game!", sender: "me", timestamp: "12:01 PM"}
+      ]);
+      const [newMessage, setNewMessage] = useState('');
+
+      const messagesEndRef = useRef<HTMLDivElement>(null);
+
+const scrollToBottom = () => {
+  messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+};
+    
 
     const localVideoRef = useRef<HTMLVideoElement>(null);
     const remoteVideoRef = useRef<HTMLVideoElement>(null);
@@ -47,6 +62,10 @@ function Game() {
                 });
                 break;
 
+            case 'CLOCK_UPDATE':
+                handleClock(data.payload)
+                break;
+                
             case 'GAME_OVER':
                 setStarted(false);
                 handleGameOver(data.payload.winner)
@@ -72,6 +91,11 @@ function Game() {
                 break;
         }
     }, []);
+
+    
+    useEffect(() => {
+        scrollToBottom();
+      }, [messages]);
 
     useEffect(() => {
         const handleResize = () => setWindowWidth(window.innerWidth)
@@ -299,18 +323,42 @@ function Game() {
         setChess(new Chess());
     };
 
+    const handleClock = (data:  {
+        white: number;
+        black: number;
+    }
+) => {
+        setBlackClock(data.black);
+        setWhiteClock(data.white);
+    }
+
+    const handleSendMessage = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (newMessage.trim()) {
+          setMessages(prev => [...prev, {
+            text: newMessage,
+            sender: 'me',
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          }]);
+          setNewMessage('');
+        }
+      };
+
     return (
         <div className="flex flex-col min-h-screen bg-[#312E2B] text-white p-4">
         {error && <div className="bg-red-500 text-white p-4 mb-4 rounded">{error}</div>}
 
         <div className="flex justify-center items-center flex-1">
-            <div className="flex gap-4 items-center">
-                <div>
-                    <p className="text-2xl font-bold">Your turn: {colorRef.current}</p>
-                </div>
-                <div className="w-1/2 bg-gray-800 rounded-lg overflow-hidden aspect-video">
-                    <video ref={localVideoRef} className="w-full h-full object-cover" autoPlay muted playsInline />
-                </div>
+  <div className="flex gap-4 items-center">
+    {/* Local Player Section */}
+    <div className="w-1/2 flex flex-col gap-2">
+      <div className="bg-[#272522] text-amber-500 text-4xl font-bold text-center p-4 rounded-lg shadow-lg">
+        {colorRef.current === 'white' ? whiteClock : blackClock}
+      </div>
+      <div className="bg-gray-800 rounded-lg overflow-hidden aspect-video">
+        <video ref={localVideoRef} className="w-full h-full object-cover" autoPlay muted playsInline />
+      </div>
+    </div>
                 
                 <div className="w-1/2">
                     <Chessboard
@@ -325,14 +373,16 @@ function Game() {
                     />
                 </div>
                 
-                <div>
-                    <p className="text-2xl font-bold">Your turn: {colorRef.current}</p>
-                </div>
-                <div className="w-1/2 bg-gray-800 rounded-lg overflow-hidden aspect-video">
-                    <video ref={remoteVideoRef} className="w-full h-full object-cover" autoPlay playsInline />
-                </div>
-            </div>
-        </div>
+        <div className="w-1/2 flex flex-col gap-2">
+      <div className="bg-[#272522] text-amber-500 text-4xl font-bold text-center p-4 rounded-lg shadow-lg">
+            {colorRef.current === 'white' ? blackClock : whiteClock}
+      </div>
+      <div className="bg-gray-800 rounded-lg overflow-hidden aspect-video">
+        <video ref={remoteVideoRef} className="w-full h-full object-cover" autoPlay playsInline />
+      </div>
+    </div>
+  </div>
+</div>
 
         <div className="flex flex-col items-center gap-4 mt-4">
             <Button
@@ -366,6 +416,43 @@ function Game() {
                 </AlertDialogContent>
             </AlertDialog>
         </div>
+
+        <div className="mt-8 w-full max-w-2xl mx-auto">
+    <div className="bg-[#272522] rounded-lg p-4 shadow-xl">
+      <div className="h-48 overflow-y-auto mb-4 space-y-3">
+      <div className="h-48 overflow-y-auto mb-4 space-y-3 scrollbar-custom">
+        {messages.map((msg, index) => (
+          <div 
+            key={index}
+            className={`flex ${msg.sender === 'me' ? 'justify-end' : 'justify-start'}`}
+          >
+            <div className={`max-w-xs p-3 rounded-lg ${msg.sender === 'me' ? 'bg-[#538D4E] ml-auto' : 'bg-[#565452] mr-auto'}`}>
+              <p className="text-sm text-gray-200">{msg.text}</p>
+              <p className="text-xs text-gray-400 mt-1">{msg.timestamp}</p>
+            </div>
+          </div>
+        ))}
+          <div ref={messagesEndRef} />
+          </div>
+      </div>
+      
+      <form onSubmit={handleSendMessage} className="flex gap-2">
+        <input
+          type="text"
+          value={newMessage}
+          onChange={(e) => setNewMessage(e.target.value)}
+          placeholder="Type your message..."
+          className="flex-1 bg-[#3A3937] text-gray-200 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-amber-500"
+        />
+        <Button
+          type="submit"
+          className="bg-amber-500 hover:bg-amber-600 text-[#312E2B] font-medium px-6 py-2"
+        >
+          Send
+        </Button>
+      </form>
+    </div>
+  </div>
     </div>
 );
 }

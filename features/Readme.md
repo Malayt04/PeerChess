@@ -1,6 +1,5 @@
 # Features to be shipped
 
-1. Clock
+1. Clock - done
 2. Resignisation button 
-3. Moves recorder
-4. Chatting 
+3. Chatting 

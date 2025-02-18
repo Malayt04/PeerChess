@@ -64,3 +64,19 @@
     @apply bg-background text-foreground;
   }
 }
+
+@layer components {
+  .scrollbar-custom::-webkit-scrollbar {
+    @apply w-2;
+  }
+  
+  .scrollbar-custom::-webkit-scrollbar-track {
+    @apply bg-[#3A3937] rounded;
+  }
+  
+  .scrollbar-custom::-webkit-scrollbar-thumb {
+    @apply bg-[#565452] rounded hover:bg-[#538D4E];
+  }
+}
+
+
