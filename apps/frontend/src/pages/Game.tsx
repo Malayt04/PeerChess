@@ -14,6 +14,7 @@ const configuration = {
 };
 
 function Game() {
+
     const socket = useSocket();
     console.log(socket)
     const [chess, setChess] = useState(new Chess());
@@ -24,6 +25,7 @@ function Game() {
     const [windowWidth, setWindowWidth] = useState(typeof window !== "undefined" ? window.innerWidth : 0)
     const [whiteClock, setWhiteClock] = useState(600)
     const [blackClock, setBlackClock] = useState(600)
+    const [waiting, setWaiting] = useState(false)
 
     const [messages, setMessages] = useState<Array<{text: string, sender: string, timestamp: string}>>([]);
       const [newMessage, setNewMessage] = useState('');
@@ -48,6 +50,7 @@ const scrollToBottom = () => {
         switch (data.type) {
             case 'INIT_GAME':
                 colorRef.current = data.payload.color;
+                setWaiting(false)
                 setStarted(true);
                 break;
 
@@ -69,6 +72,7 @@ const scrollToBottom = () => {
             case 'GAME_OVER':
                 setStarted(false);
                 handleGameOver(data.payload.winner)
+                socket?.close()
                 break;
 
             case 'WEBRTC_OFFER':
@@ -287,7 +291,7 @@ const scrollToBottom = () => {
         }
     
         socket.send(JSON.stringify({ type: 'INIT_GAME' }));
-        
+        setWaiting(true);
         initializeWebRTC();
     }, [socket]);
     useEffect(() => {
@@ -319,7 +323,6 @@ const scrollToBottom = () => {
     const handleGameOver = (winner: string) => {
         alert(`${winner} won the game.`);
         setStarted(false);
-        setChess(new Chess());
     };
 
     const handleClock = (data:  {
@@ -408,7 +411,7 @@ const scrollToBottom = () => {
                 disabled={!socket || started}
                 className="px-8 py-4 text-lg bg-yellow-400 hover:bg-yellow-500 text-[#312E2B] transition-colors rounded-full"
             >
-                {!socket ? "Connecting..." : started ? "Game Started" : "Start Match"}
+                {!socket || waiting ? "Connecting..." : started && !waiting ? "Game Started" : "Start Match"}
             </Button>
 
             <div className="flex flex-col items-center gap-4 mt-4">

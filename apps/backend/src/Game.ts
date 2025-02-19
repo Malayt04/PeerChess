@@ -139,16 +139,23 @@ export class Game {
 
         if (this.board.isGameOver()) {
             const winner = this.moveCount % 2 === 0 ? "white" : "black";
-
+        
             const gameOverMessage = JSON.stringify({
                 type: GAME_OVER,
                 payload: { winner },
             });
-
-            this.playerOne.send(gameOverMessage);
-            this.playerTwo.send(gameOverMessage);
+        
+            if (this.playerOne.readyState === WebSocket.OPEN) {
+                this.playerOne.send(gameOverMessage, () => this.playerOne.close());
+            }
+        
+            if (this.playerTwo.readyState === WebSocket.OPEN) {
+                this.playerTwo.send(gameOverMessage, () => this.playerTwo.close());
+            }
+        
             return;
         }
+        
 
         // Send move updates
         const moveUpdate = JSON.stringify({
