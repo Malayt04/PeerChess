@@ -1,6 +1,6 @@
 import { Chess } from "chess.js";
 import WebSocket from "ws";
-import { GAME_OVER, ICE_CANDIDATE, INIT_GAME, INVALID_MOVE, MOVE, WEBRTC_ANSWER, WEBRTC_OFFER, CLOCK_UPDATE } from "./message";
+import { GAME_OVER, ICE_CANDIDATE, INIT_GAME, INVALID_MOVE, MOVE, WEBRTC_ANSWER, WEBRTC_OFFER, CLOCK_UPDATE, MESSAGE } from "./message";
 import { move } from './types';
 
 export class Game {
@@ -96,6 +96,22 @@ export class Game {
 
         forwardToPeer(this.playerOne, this.playerTwo);
         forwardToPeer(this.playerTwo, this.playerOne);
+    }
+
+    sendMessage(message: string, sender: WebSocket) {
+        
+        if (sender === this.playerOne) {
+            this.playerTwo.send(JSON.stringify({
+                type: MESSAGE,
+                payload: message
+            }));
+        } else {
+            this.playerOne.send(JSON.stringify({
+                type: MESSAGE,
+                payload: message
+            }));
+        }
+
     }
 
     makeMove(user: WebSocket, move: move) {

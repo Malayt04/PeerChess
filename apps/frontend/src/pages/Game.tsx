@@ -25,10 +25,7 @@ function Game() {
     const [whiteClock, setWhiteClock] = useState(600)
     const [blackClock, setBlackClock] = useState(600)
 
-    const [messages, setMessages] = useState<Array<{text: string, sender: string, timestamp: string}>>([
-        {text: "Hello! Ready to play?", sender: "opponent", timestamp: "12:00 PM"},
-        {text: "Let's have a good game!", sender: "me", timestamp: "12:01 PM"}
-      ]);
+    const [messages, setMessages] = useState<Array<{text: string, sender: string, timestamp: string}>>([]);
       const [newMessage, setNewMessage] = useState('');
 
       const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -65,7 +62,10 @@ const scrollToBottom = () => {
             case 'CLOCK_UPDATE':
                 handleClock(data.payload)
                 break;
-                
+            
+            case 'MESSAGE':
+                handleChat(data.payload)
+                break;
             case 'GAME_OVER':
                 setStarted(false);
                 handleGameOver(data.payload.winner)
@@ -111,7 +111,6 @@ const scrollToBottom = () => {
         socket.addEventListener('message', handleMessage);
 
     }, [socket, handleMessage]);
-
     
 
     const initializeWebRTC = async () => {
@@ -344,6 +343,25 @@ const scrollToBottom = () => {
         }
       };
 
+      const handleChat = (message: string) => {
+        setMessages(prev => [...prev, {
+          text: message,
+          sender: 'opponent',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        }])
+      }
+
+      const sendMessage = () => {
+        if(newMessage.trim() === '') {
+            return;
+        }
+
+        socket?.send(JSON.stringify({
+            type: 'MESSAGE',
+            payload: newMessage,
+        }))
+    } 
+
     return (
         <div className="flex flex-col min-h-screen bg-[#312E2B] text-white p-4">
         {error && <div className="bg-red-500 text-white p-4 mb-4 rounded">{error}</div>}
@@ -447,6 +465,7 @@ const scrollToBottom = () => {
         <Button
           type="submit"
           className="bg-amber-500 hover:bg-amber-600 text-[#312E2B] font-medium px-6 py-2"
+          onClick={sendMessage}
         >
           Send
         </Button>
