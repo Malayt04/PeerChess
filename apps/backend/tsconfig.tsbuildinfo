@@ -1,1 +1,1 @@
-{"root":["./src/game.ts","./src/gamemanager.ts","./src/index.ts","./src/message.ts","./src/types.ts"],"version":"5.7.3"}
+{"root":["./src/game.ts","./src/gamemanager.ts","./src/user.ts","./src/index.ts","./src/message.ts","./src/types.ts","./src/lib/redis.ts"],"errors":true,"version":"5.7.3"}

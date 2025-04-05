@@ -1,335 +1,255 @@
 import { Chess } from "chess.js";
 import WebSocket from "ws";
-import { GAME_OVER, ICE_CANDIDATE, INIT_GAME, INVALID_MOVE, MOVE, WEBRTC_ANSWER, WEBRTC_OFFER, CLOCK_UPDATE, MESSAGE } from "./message";
+import { redis } from "./lib/redis";
+
+import {
+  GAME_OVER,
+  ICE_CANDIDATE,
+  INIT_GAME,
+  INVALID_MOVE,
+  MOVE,
+  WEBRTC_ANSWER,
+  WEBRTC_OFFER,
+  CLOCK_UPDATE,
+  MESSAGE,
+} from "./message";
 import { move } from './types';
+import { User } from "./User";
 
 export class Game {
-    playerOne: WebSocket;
-    playerOneClock: number;
-    playerTwo: WebSocket;
-    playerTwoClock: number;
-    clockInterval: NodeJS.Timeout | null;
-    board: Chess;
-    webRTCOffer: RTCSessionDescriptionInit[];
-    moves: move[];
-    moveCount: number;
-    gameId: string;
-    private webrtcHandlers: { playerOne: any, playerTwo: any };
-    private isGameActive: boolean;
-    private offerInterval: NodeJS.Timeout | null;
+  playerOne: User;
+  playerTwo: User;
+  gameId: string;
+  board: Chess;
+  clockInterval: NodeJS.Timeout | null = null;
+  offerInterval: NodeJS.Timeout | null = null;
+  moveCount: number = 0;
+  isGameActive: boolean = true;
+  private webrtcHandlers: { playerOne: any, playerTwo: any } = { playerOne: null, playerTwo: null };
 
-    constructor(playerOne: WebSocket, playerTwo: WebSocket) {
-        this.playerOne = playerOne;
-        this.playerOneClock = 600;
-        this.playerTwo = playerTwo;
-        this.playerTwoClock = 600;
-        this.clockInterval = null;
-        this.offerInterval = null;
-        this.board = new Chess();
-        this.moves = [];
-        this.webRTCOffer = [];
-        this.moveCount = 0;
-        this.gameId = new Date().getTime().toString();
-        this.webrtcHandlers = { playerOne: null, playerTwo: null };
-        this.isGameActive = true;
+  constructor(gameId: string, playerOne: User, playerTwo: User) {
+    this.gameId = gameId;
+    this.playerOne = playerOne;
+    this.playerTwo = playerTwo;
+    this.board = new Chess();
 
-        this.setupErrorHandlers();
-        this.initializeGame();
-        this.startClock();
-        this.setupWebRTCForwarding();
-        
-        // Try to send offers every 2 seconds until successful
-        this.offerInterval = setInterval(() => {
-            if (!this.isGameActive || this.webRTCOffer.length === 0) {
-                if (this.offerInterval) {
-                    clearInterval(this.offerInterval);
-                    this.offerInterval = null;
-                }
-                return;
-            }
-            this.attemptSendStoredOffers();
-        }, 2000);
-    }
+    this.setupErrorHandlers();
+    this.initializeGame();
+    this.setupWebRTCForwarding();
+    this.startClock();
 
-    private setupErrorHandlers() {
-        const errorHandler = (player: string) => (error: Error) => {
-            console.error(`WebSocket error in ${player}:`, error.message);
-            this.cleanupGame();
+    // Retry sending WebRTC offers every 2s if needed
+    this.offerInterval = setInterval(() => {
+      this.attemptSendStoredOffers();
+    }, 2000);
+  }
+
+  async initializeGame() {
+    await redis.hset(`game:${this.gameId}`, {
+      playerOneClock: 600,
+      playerTwoClock: 600,
+      board: this.board.fen(),
+      isGameActive: 'true',
+      moveCount: '0',
+    });
+
+    this.sendToPlayer(this.playerOne.socket, {
+      type: INIT_GAME,
+      payload: { color: "white", gameId: this.gameId },
+    });
+
+    this.sendToPlayer(this.playerTwo.socket, {
+      type: INIT_GAME,
+      payload: { color: "black", gameId: this.gameId },
+    });
+
+    await this.attemptSendStoredOffers();
+  }
+
+  async startClock() {
+    if (this.clockInterval) clearInterval(this.clockInterval);
+
+    this.clockInterval = setInterval(async () => {
+      const gameData = await redis.hgetall(`game:${this.gameId}`);
+      if (!this.isGameActive || !gameData?.isGameActive) return;
+
+      let white = parseInt((gameData.playerOneClock ?? '600').toString());
+      let black = parseInt((gameData.playerTwoClock ?? '600').toString());
+      let count = parseInt((gameData.moveCount ?? '0').toString());
+      
+
+      if (count % 2 === 0) white--
+      else black--
+
+      await redis.hset(`game:${this.gameId}`, {
+        playerOneClock: white,
+        playerTwoClock: black,
+      });
+
+      const clockUpdate = {
+        type: CLOCK_UPDATE,
+        payload: { white, black },
+      };
+
+      this.sendToPlayer(this.playerOne.socket, clockUpdate);
+      this.sendToPlayer(this.playerTwo.socket, clockUpdate);
+
+      if (white <= 0 || black <= 0) {
+        const winner = white <= 0 ? "black" : "white";
+        const gameOverMessage = {
+          type: GAME_OVER,
+          payload: { winner },
         };
 
-        const closeHandler = (player: string) => () => {
-            console.log(`${player} connection closed`);
-            this.cleanupGame();
-        };
+        this.sendToPlayer(this.playerOne.socket, gameOverMessage);
+        this.sendToPlayer(this.playerTwo.socket, gameOverMessage);
+        this.endGame();
+      }
+    }, 1000);
+  }
 
-        this.playerOne.on('error', errorHandler('playerOne'));
-        this.playerOne.on('close', closeHandler('playerOne'));
-        
-        this.playerTwo.on('error', errorHandler('playerTwo'));
-        this.playerTwo.on('close', closeHandler('playerTwo'));
+  stopClock() {
+    if (this.clockInterval) clearInterval(this.clockInterval);
+    this.clockInterval = null;
+  }
+
+  private setupErrorHandlers() {
+    const handleDisconnect = (label: string) => () => {
+      console.log(`${label} disconnected`);
+      this.cleanupGame();
+    };
+
+    this.playerOne.socket.on("error", handleDisconnect("playerOne"));
+    this.playerOne.socket.on("close", handleDisconnect("playerOne"));
+
+    this.playerTwo.socket.on("error", handleDisconnect("playerTwo"));
+    this.playerTwo.socket.on("close", handleDisconnect("playerTwo"));
+  }
+
+  private sendToPlayer(player: WebSocket, message: any) {
+    if (player.readyState === WebSocket.OPEN) {
+      try {
+        player.send(JSON.stringify(message));
+        return true;
+      } catch (err) {
+        console.error("Send failed:", err);
+      }
     }
+    return false;
+  }
 
-    private initializeGame() {
-        try {
-            if (this.playerOne.readyState === WebSocket.OPEN) {
-                this.playerOne.send(JSON.stringify({
-                    type: INIT_GAME,
-                    payload: { color: "white", gameId: this.gameId },
-                }));
-            }
-
-            if (this.playerTwo.readyState === WebSocket.OPEN) {
-                this.playerTwo.send(JSON.stringify({
-                    type: INIT_GAME,
-                    payload: { color: "black", gameId: this.gameId },
-                }));
-                
-                // Send any stored offers after initializing playerTwo
-                this.attemptSendStoredOffers();
-            }
-        } catch (error) {
-            console.error("Error initializing game:", error);
-            this.cleanupGame();
-        }
+  private async attemptSendStoredOffers() {
+    const offers = await redis.lrange(`offers:${this.gameId}`, 0, -1);
+    if (offers.length > 0 && this.playerTwo.socket.readyState === WebSocket.OPEN) {
+      for (const offer of offers) {
+        const parsed = JSON.parse(offer);
+        const sent = this.sendToPlayer(this.playerTwo.socket, {
+          type: WEBRTC_OFFER,
+          payload: parsed,
+        });
+        if (sent) await redis.lrem(`offers:${this.gameId}`, 0, offer);
+      }
     }
+  }
 
-    private sendToPlayer(player: WebSocket, message: any) {
-        if (player.readyState === WebSocket.OPEN) {
-            try {
-                player.send(JSON.stringify(message));
-                return true;
-            } catch (error) {
-                console.error("Error sending message:", error);
-                return false;
-            }
-        }
-        return false;
-    }
-
-    private attemptSendStoredOffers() {
-        if (this.playerTwo.readyState === WebSocket.OPEN && this.webRTCOffer.length > 0) {
-            console.log("Attempting to send stored WebRTC offers to playerTwo");
-            const offersToRemove: RTCSessionDescriptionInit[] = [];
-            
-            for (const offer of this.webRTCOffer) {
-                const sent = this.sendToPlayer(this.playerTwo, {
-                    type: WEBRTC_OFFER,
-                    payload: offer
-                });
-                
-                if (sent) {
-                    offersToRemove.push(offer);
-                }
-            }
-            
-            // Remove successfully sent offers
-            this.webRTCOffer = this.webRTCOffer.filter(offer => !offersToRemove.includes(offer));
-            
-            if (this.webRTCOffer.length === 0 && this.offerInterval) {
-                clearInterval(this.offerInterval);
-                this.offerInterval = null;
-            }
-        }
-    }
-    
-
-    startClock() {
-        if (this.clockInterval) {
-            clearInterval(this.clockInterval);
-        }
-
-        this.clockInterval = setInterval(() => {
-            if (!this.isGameActive) {
-                this.stopClock();
-                return;
-            }
-
-            if (this.moveCount % 2 === 0) {
-                this.playerOneClock -= 1;
-            } else {
-                this.playerTwoClock -= 1;
-            }
-
-            const clockUpdate = {
-                type: CLOCK_UPDATE,
-                payload: {
-                    white: this.playerOneClock,
-                    black: this.playerTwoClock,
-                },
-            };
-
-            this.sendToPlayer(this.playerOne, clockUpdate);
-            this.sendToPlayer(this.playerTwo, clockUpdate);
-
-            if (this.playerOneClock <= 0 || this.playerTwoClock <= 0) {
-                this.stopClock();
-                const winner = this.playerOneClock <= 0 ? "black" : "white";
-
-                const gameOverMessage = {
-                    type: GAME_OVER,
-                    payload: { winner },
-                };
-
-                this.sendToPlayer(this.playerOne, gameOverMessage);
-                this.sendToPlayer(this.playerTwo, gameOverMessage);
-                this.endGame();
-            }
-        }, 1000);
-    }
-
-    stopClock() {
-        if (this.clockInterval) {
-            clearInterval(this.clockInterval);
-            this.clockInterval = null;
-        }
-    }
-
-    setupWebRTCForwarding() {
-        const forwardToPeer = (sender: WebSocket, receiver: WebSocket, senderName: string) => {
-            const messageHandler = (data: string) => {
-                if (!this.isGameActive) return;
-    
-                try {
-                    const message = JSON.parse(data);
-                    
-                    if (message.type === WEBRTC_OFFER) {
-                        console.log(`Received WebRTC offer from ${senderName}`);
-    
-                        if (receiver.readyState === WebSocket.OPEN) {
-                            console.log(`Forwarding WebRTC offer to ${senderName === 'playerOne' ? 'playerTwo' : 'playerOne'}`);
-                            this.sendToPlayer(receiver, {
-                                type: message.type,
-                                payload: message.payload
-                            });
-                        } else {
-                            // Store offer in queue if receiver is not ready
-                            console.log(`Storing WebRTC offer as ${senderName === 'playerOne' ? 'playerTwo' : 'playerOne'} is not ready`);
-                            this.webRTCOffer.push(message.payload);
-                        }
-                    } 
-                    else if ([WEBRTC_ANSWER, ICE_CANDIDATE].includes(message.type)) {
-                        console.log(`Forwarding ${message.type} from ${senderName}`);
-                        
-                        if (receiver.readyState === WebSocket.OPEN) {
-                            this.sendToPlayer(receiver, {
-                                type: message.type,
-                                payload: message.payload
-                            });
-                        }
-                    }
-                } catch (error) {
-                    console.error(`Error parsing WebRTC message from ${senderName}:`, error);
-                }
-            };
-    
-            sender.on("message", messageHandler);
-    
-            return messageHandler;
-        };
-    
-        this.webrtcHandlers.playerOne = forwardToPeer(this.playerOne, this.playerTwo, 'playerOne');
-        this.webrtcHandlers.playerTwo = forwardToPeer(this.playerTwo, this.playerOne, 'playerTwo');
-        
-        // Send any stored WebRTC offers immediately if playerTwo is ready
-        this.attemptSendStoredOffers();
-    }
-    
-    sendMessage(message: string, sender: WebSocket) {
+  setupWebRTCForwarding() {
+    const forward = (sender: WebSocket, receiver: WebSocket, senderName: string) => {
+      const handler = async (data: string) => {
+        const msg = JSON.parse(data);
         if (!this.isGameActive) return;
-        
-        try {
-            const messagePayload = {
-                type: MESSAGE,
-                payload: message
-            };
-            
-            if (sender === this.playerOne) {
-                this.sendToPlayer(this.playerTwo, messagePayload);
-            } else {
-                this.sendToPlayer(this.playerOne, messagePayload);
-            }
-        } catch (error) {
-            console.error("Error sending chat message:", error);
+
+        if (msg.type === WEBRTC_OFFER) {
+          if (receiver.readyState === WebSocket.OPEN) {
+            this.sendToPlayer(receiver, msg);
+          } else {
+            await redis.rpush(`offers:${this.gameId}`, JSON.stringify(msg.payload));
+          }
+        } else if ([WEBRTC_ANSWER, ICE_CANDIDATE].includes(msg.type)) {
+          if (receiver.readyState === WebSocket.OPEN) {
+            this.sendToPlayer(receiver, msg);
+          }
         }
+      };
+
+      sender.on("message", handler);
+      return handler;
+    };
+
+    this.webrtcHandlers.playerOne = forward(this.playerOne.socket, this.playerTwo.socket, 'playerOne');
+    this.webrtcHandlers.playerTwo = forward(this.playerTwo.socket, this.playerOne.socket, 'playerTwo');
+  }
+
+  async makeMove(user: WebSocket, move: move) {
+    if (!this.isGameActive) return;
+
+    const count = parseInt(await redis.hget(`game:${this.gameId}`, "moveCount") || '0');
+    const isWhite = user === this.playerOne.socket;
+
+    if ((count % 2 === 0 && !isWhite) || (count % 2 === 1 && isWhite)) return;
+
+    try {
+      this.board.move(move);
+    } catch {
+      const msg = { type: INVALID_MOVE, payload: { message: "Invalid move" } };
+      this.sendToPlayer(this.playerOne.socket, msg);
+      this.sendToPlayer(this.playerTwo.socket, msg);
+      return;
     }
 
-    makeMove(user: WebSocket, move: move) {
-        if (!this.isGameActive) return;
-        
-        if ((this.moveCount % 2 === 0 && user !== this.playerOne) || 
-            (this.moveCount % 2 === 1 && user !== this.playerTwo)) {
-            return;
-        }
+    await redis.hset(`game:${this.gameId}`, {
+      board: this.board.fen(),
+      moveCount: (count + 1).toString(),
+    });
+    await redis.rpush(`moves:${this.gameId}`, JSON.stringify(move));
 
-        try {
-            this.board.move(move);
-        } catch (e) {
-            console.log("Invalid move:", e);
-            const invalidMoveMessage = {
-                type: INVALID_MOVE,
-                payload: { message: "Invalid move" },
-            };
+    const moveMsg = { type: MOVE, payload: { move } };
+    this.sendToPlayer(this.playerOne.socket, moveMsg);
+    this.sendToPlayer(this.playerTwo.socket, moveMsg);
 
-            this.sendToPlayer(this.playerOne, invalidMoveMessage);
-            this.sendToPlayer(this.playerTwo, invalidMoveMessage);
-            return;
-        }
+    if (this.board.isGameOver()) {
+      const winner = count % 2 === 0 ? "white" : "black";
+      const gameOverMsg = { type: GAME_OVER, payload: { winner } };
+      this.sendToPlayer(this.playerOne.socket, gameOverMsg);
+      this.sendToPlayer(this.playerTwo.socket, gameOverMsg);
+      this.endGame();
+    } else {
+      this.startClock();
+    }
+  }
 
-        this.moves.push(move);
+  sendMessage(message: string, sender: WebSocket) {
+    const msg = { type: MESSAGE, payload: message };
+    if (sender === this.playerOne.socket) {
+      this.sendToPlayer(this.playerTwo.socket, msg);
+    } else {
+      this.sendToPlayer(this.playerOne.socket, msg);
+    }
+  }
 
-        if (this.board.isGameOver()) {
-            const winner = this.moveCount % 2 === 0 ? "white" : "black";
-        
-            const gameOverMessage = {
-                type: GAME_OVER,
-                payload: { winner },
-            };
-        
-            this.sendToPlayer(this.playerOne, gameOverMessage);
-            this.sendToPlayer(this.playerTwo, gameOverMessage);
-            this.endGame();
-            return;
-        }
+  async endGame() {
+    this.isGameActive = false;
+    await redis.hset(`game:${this.gameId}`, { isGameActive: 'false' });
+    this.cleanupGame();
+  }
 
-        // Send move updates
-        const moveUpdate = {
-            type: MOVE,
-            payload: { move },
-        };
+  async cleanupGame() {
+    if (!this.isGameActive) return;
+    this.isGameActive = false;
 
-        this.sendToPlayer(this.playerOne, moveUpdate);
-        this.sendToPlayer(this.playerTwo, moveUpdate);
+    this.stopClock();
 
-        this.moveCount++;
-        this.startClock();
+    if (this.offerInterval) {
+      clearInterval(this.offerInterval);
+      this.offerInterval = null;
     }
 
-    endGame() {
-        this.isGameActive = false;
-        this.stopClock();
-        this.cleanupGame();
-    }
+    // Clear WebSocket listeners
+    if (this.webrtcHandlers.playerOne) this.playerOne.socket.removeListener("message", this.webrtcHandlers.playerOne);
+    if (this.webrtcHandlers.playerTwo) this.playerTwo.socket.removeListener("message", this.webrtcHandlers.playerTwo);
 
-    cleanupGame() {
-        // Only clean up once
-        if (!this.isGameActive) return;
-        
-        this.isGameActive = false;
-        this.stopClock();
-        
-        // Clear offer interval if it exists
-        if (this.offerInterval) {
-            clearInterval(this.offerInterval);
-            this.offerInterval = null;
-        }
-        
-        // Remove WebRTC message handlers to prevent memory leaks
-        if (this.webrtcHandlers.playerOne) {
-            this.playerOne.removeListener('message', this.webrtcHandlers.playerOne);
-        }
-        
-        if (this.webrtcHandlers.playerTwo) {
-            this.playerTwo.removeListener('message', this.webrtcHandlers.playerTwo);
-        }
-    }
+    // Clear Redis data
+    await redis.del(`game:${this.gameId}`, `moves:${this.gameId}`, `offers:${this.gameId}`);
+  }
+
+
 }

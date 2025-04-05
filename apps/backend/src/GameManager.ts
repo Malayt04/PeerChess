@@ -1,165 +1,123 @@
-import { Game } from "./Game";
-import {GAME_OVER, INIT_GAME, MESSAGE, MOVE} from "./message";
 import WebSocket from "ws";
+import Redis from "ioredis";
+import { Game } from "./Game";
+import { User } from "./User";
+import { INIT_GAME, MOVE, MESSAGE } from "./message";
+
+const redis = new Redis();
 
 export class GameManager {
-    private games: Game[];
-    private users: WebSocket[];
-    private pendingUser: WebSocket | null;
+    private games: Map<string, Game> = new Map();
+    private pendingUser: User | null = null;
 
-    constructor() {
-        this.games = [];
-        this.users = [];
-        this.pendingUser = null;
+    async addUser(socket: WebSocket) {
+        const user = new User(socket);
+        await user.saveToRedis();
+
+        console.log(`User connected: ${user.id}`);
+        this.setupMessageHandlers(user);
+
+        socket.on("close", () => this.handleDisconnect(user));
+        socket.on("error", (err) => 
+            console.error(`WS error for ${user.id}:`, err));
     }
 
-    addUser(user: WebSocket) {
-        this.users.push(user);
-        console.log("User added");
-        this.addHandler(user);
-
-        user.on('close', () => {
-            this.removeUser(user);
-        });
-
-        user.on('error', (err) => {
-            console.error("WebSocket error:", err);
-            this.removeUser(user);
-        });
-    }
-
-    removeUser(user: WebSocket) {
-        // Find and cleanup any game this user is part of
-        const game = this.findGameForUser(user);
-        if (game) {
-            // If this is the implementation of the new Game class with endGame method
-            if (typeof game.endGame === 'function') {
-                game.endGame();
+    private setupMessageHandlers(user: User) {
+        user.socket.on("message", async (data: string) => {
+            try {
+                const msg = JSON.parse(data);
+                
+                switch (msg.type) {
+                    case INIT_GAME:
+                        await this.handleMatchmaking(user);
+                        break;
+                        
+                    case MOVE:
+                        await this.handlePlayerMove(user, msg.payload);
+                        break;
+                        
+                    case MESSAGE:
+                        await this.handleChatMessage(user, msg.payload);
+                        break;
+                }
+            } catch (err) {
+                console.error(`Message handling error for ${user.id}:`, err);
             }
-            this.games = this.games.filter(g => g !== game);
+        });
+    }
+
+    private async handleMatchmaking(user: User) {
+        if (this.pendingUser) {
+            const gameId = `game_${Date.now()}`;
+            const game = new Game(
+                gameId, 
+                this.pendingUser,
+                user
+            );
+            
+            this.games.set(gameId, game);
+            console.log(`Game started: ${gameId}`);
+            
+            // Clear pending user atomically
+            const prevUser = this.pendingUser;
+            this.pendingUser = null;
+            
+            // Link users to game
+            await Promise.all([
+                prevUser.linkToGame(gameId),
+                user.linkToGame(gameId)
+            ]);
+        } else {
+            this.pendingUser = user;
+            console.log(`User queued: ${user.id}`);
+        }
+    }
+
+    private async handlePlayerMove(user: User, movePayload: any) {
+        const gameId = await redis.hget(`user:${user.id}`, "currentGame");
+        if (!gameId) return;
+
+        const game = this.games.get(gameId);
+        if (!game) {
+            console.warn(`Missing game ${gameId} for ${user.id}`);
+            return;
         }
 
-        // Clear pending user if needed
-        if (this.pendingUser === user) {
+        try {
+            await game.makeMove(user.socket, movePayload);
+        } catch (err) {
+            console.error(`Move error in ${gameId}:`, err);
+            user.socket.send(JSON.stringify({
+                type: "ERROR",
+                payload: "Invalid move"
+            }));
+        }
+    }
+
+    private async handleChatMessage(sender: User, text: string) {
+        const gameId = await redis.hget(`user:${sender.id}`, "currentGame");
+        if (!gameId) return;
+
+        const game = this.games.get(gameId);
+        game?.sendMessage(text, sender.socket);
+    }
+
+    private async handleDisconnect(user: User) {
+        console.log(`User disconnected: ${user.id}`);
+        
+        const gameId = await redis.hget(`user:${user.id}`, "currentGame");
+        if (gameId) {
+            const game = this.games.get(gameId);
+            if (game) {
+                await game.endGame();
+                this.games.delete(gameId);
+            }
+        }
+
+        if (this.pendingUser?.id === user.id) {
             this.pendingUser = null;
         }
 
-        // Remove user from users list
-        this.users = this.users.filter(u => u !== user);
-        console.log("User removed");
-    }
-
-    private findGameForUser(user: WebSocket): Game | undefined {
-        return this.games.find(game => 
-            game.playerOne === user || game.playerTwo === user
-        );
-    }
-
-    private addHandler(user: WebSocket) {
-        user.on('message', (message: string) => {
-            try {
-                const data = JSON.parse(message);
-                
-                // Handle game initialization
-                if (data.type === INIT_GAME) {
-                    this.handleGameInitialization(user);
-                }
-                
-                // Handle moves
-                else if (data.type === MOVE) {
-                    this.handleMove(user, data);
-                }
-                
-                // Handle chat messages
-                else if (data.type === MESSAGE) {
-                    this.handleChatMessage(user, data);
-                }
-
-                else if(data.type === GAME_OVER){
-                    this.handleGameOver(user)
-                }
-                
-            } catch (error) {
-                console.error("Error processing message:", error);
-            }
-        });
-    }
-
-    private handleGameInitialization(user: WebSocket) {
-        if (this.pendingUser) {
-
-            try {
-                const game = new Game(this.pendingUser, user);
-                this.games.push(game);
-                this.pendingUser = null;
-                console.log("Game created between two users");
-            } catch (error) {
-                console.error("Error creating game:", error);
-                this.pendingUser = null;
-            }
-        } else {
-            this.pendingUser = user;
-            console.log("User added to pending queue");
-        }
-    }
-
-    private handleMove(user: WebSocket, data: any) {
-        console.log("Processing move");
-        const game = this.findGameForUser(user);
-        
-        if (game) {
-            try {
-                console.log("Executing move:", data.payload.move);
-                game.makeMove(user, data.payload.move);
-            } catch (error) {
-                console.error("Error processing move:", error);
-            }
-        } else {
-            console.warn("Move received from user not in a game");
-        }
-    }
-
-    private handleGameOver(user: WebSocket) {
-        const game = this.findGameForUser(user);
-    
-        if (game) {
-            try {
-                
-                const playerOne = game.playerOne;
-                const playerTwo = game.playerTwo;
-                
-                // End and remove the game
-                game.endGame();
-                this.games = this.games.filter(g => g !== game);
-                
-                // Re-initialize players if they're still connected
-                if (this.users.includes(playerOne)) {
-                    this.handleGameInitialization(playerOne);
-                }
-                
-                if (this.users.includes(playerTwo)) {
-                    this.handleGameInitialization(playerTwo);
-                }
-                
-                console.log("Game is over");
-            } catch (error) {
-                console.log("Error ending game:", error);
-            }
-        }
-    }
-    
-
-    private handleChatMessage(user: WebSocket, data: any) {
-        const game = this.findGameForUser(user);
-        
-        if (game) {
-            try {
-                game.sendMessage(data.payload, user);
-            } catch (error) {
-                console.error("Error sending chat message:", error);
-            }
-        } else {
-            console.warn("Chat message received from user not in a game");
-        }
+        await user.deleteFromRedis();
     }
 }
