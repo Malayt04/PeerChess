@@ -1,16 +1,25 @@
 import WebSocket from "ws";
-import Redis from "ioredis";
 import { Game } from "./Game";
 import { User } from "./User";
-import { INIT_GAME, MOVE, MESSAGE } from "./message";
-
-const redis = new Redis();
+import { INIT_GAME, MOVE, MESSAGE, INVALID_MOVE } from "./message";
+import { GameRepository } from "./GameRepository";
+import { UserRepository } from "./UserRepository";
+import { move } from "./types";
 
 export class GameManager {
-    private games: Map<string, Game> = new Map();
+    private static instance: GameManager | null = null;
     private pendingUser: User | null = null;
 
-    async addUser(socket: WebSocket) {
+    private constructor() {}
+
+    public static getInstance(): GameManager {
+        if (!GameManager.instance) {
+            GameManager.instance = new GameManager();
+        }
+        return GameManager.instance;
+    }
+
+    public async addUser(socket: WebSocket) {
         const user = new User(socket);
         await user.saveToRedis();
 
@@ -18,30 +27,39 @@ export class GameManager {
         this.setupMessageHandlers(user);
 
         socket.on("close", () => this.handleDisconnect(user));
-        socket.on("error", (err) => 
-            console.error(`WS error for ${user.id}:`, err));
+        socket.on("error", (err) => console.error(`WS error for ${user.id}:`, err));
     }
 
     private setupMessageHandlers(user: User) {
-        user.socket.on("message", async (data: string) => {
+        user.socket?.on("message", async (rawData: string) => {
+            let msg;
             try {
-                const msg = JSON.parse(data);
-                
+                msg = JSON.parse(rawData);
+            } catch (e) {
+                console.error(`Invalid JSON from ${user.id}:`, rawData);
+                return;
+            }
+
+            try {
                 switch (msg.type) {
                     case INIT_GAME:
                         await this.handleMatchmaking(user);
                         break;
-                        
+
                     case MOVE:
                         await this.handlePlayerMove(user, msg.payload);
                         break;
-                        
+
                     case MESSAGE:
                         await this.handleChatMessage(user, msg.payload);
                         break;
+
+                    default:
+                        console.warn(`Unknown message type: ${msg.type}`);
+                        break;
                 }
             } catch (err) {
-                console.error(`Message handling error for ${user.id}:`, err);
+                console.error(`Handler error for ${user.id}:`, err);
             }
         });
     }
@@ -49,20 +67,14 @@ export class GameManager {
     private async handleMatchmaking(user: User) {
         if (this.pendingUser) {
             const gameId = `game_${Date.now()}`;
-            const game = new Game(
-                gameId, 
-                this.pendingUser,
-                user
-            );
-            
-            this.games.set(gameId, game);
+            const game = new Game(gameId, this.pendingUser, user, true);
+            await GameRepository.saveGame(game);
+
             console.log(`Game started: ${gameId}`);
-            
-            // Clear pending user atomically
+
             const prevUser = this.pendingUser;
             this.pendingUser = null;
-            
-            // Link users to game
+
             await Promise.all([
                 prevUser.linkToGame(gameId),
                 user.linkToGame(gameId)
@@ -73,44 +85,44 @@ export class GameManager {
         }
     }
 
-    private async handlePlayerMove(user: User, movePayload: any) {
-        const gameId = await redis.hget(`user:${user.id}`, "currentGame");
+    private async handlePlayerMove(user: User, movePayload: move) {
+        const gameId = await UserRepository.getGameId(user.id);
         if (!gameId) return;
 
-        const game = this.games.get(gameId);
+        const game = await GameRepository.getGame(gameId);
         if (!game) {
             console.warn(`Missing game ${gameId} for ${user.id}`);
             return;
         }
 
         try {
-            await game.makeMove(user.socket, movePayload);
+            await game.makeMove(user.socket!, movePayload);
         } catch (err) {
-            console.error(`Move error in ${gameId}:`, err);
-            user.socket.send(JSON.stringify({
-                type: "ERROR",
-                payload: "Invalid move"
+            console.error(`Move error in ${gameId} from ${user.id}:`, err, movePayload);
+            user.socket?.send(JSON.stringify({
+                type: INVALID_MOVE,
+                payload: { message: "Invalid move" }
             }));
         }
     }
 
     private async handleChatMessage(sender: User, text: string) {
-        const gameId = await redis.hget(`user:${sender.id}`, "currentGame");
+        const gameId = await UserRepository.getGameId(sender.id);
         if (!gameId) return;
 
-        const game = this.games.get(gameId);
-        game?.sendMessage(text, sender.socket);
+        const game = await GameRepository.getGame(gameId);
+        game?.sendMessage(text, sender.socket!);
     }
 
     private async handleDisconnect(user: User) {
         console.log(`User disconnected: ${user.id}`);
-        
-        const gameId = await redis.hget(`user:${user.id}`, "currentGame");
+
+        const gameId = await UserRepository.getGameId(user.id);
         if (gameId) {
-            const game = this.games.get(gameId);
+            const game = await GameRepository.getGame(gameId);
+            // Let the Game handle its own disconnect timeout
             if (game) {
-                await game.endGame();
-                this.games.delete(gameId);
+                game.handlePlayerDisconnect?.(user); 
             }
         }
 

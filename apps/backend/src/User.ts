@@ -1,53 +1,45 @@
 import WebSocket from "ws";
-import { redis } from "./lib/redis";
+import { UserRepository } from "./UserRepository";
 
 export class User {
     public readonly id: string;
-    public readonly socket: WebSocket;
+    public readonly socket: WebSocket | null;
     private _gameId: string | null = null;
 
-    constructor(socket: WebSocket) {
-        // Generate ID without 'user:' prefix for flexible key management
-        this.id = `usr_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    constructor(socket: WebSocket | null, userId?: string) {
+        this.id = userId || `usr_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
         this.socket = socket;
+    }
+
+    static async fromRedis(userId: string): Promise<User | null> {
+        return await UserRepository.getUser(userId);
     }
 
     get gameId(): string | null {
         return this._gameId;
     }
 
-    async setGame(gameId: string): Promise<void> {
-        this._gameId = gameId;
-        await redis.hset(`user:${this.id}`, {
-            gameId,
-            connected: this.socket.readyState === WebSocket.OPEN
-        });
-    }
-
     async linkToGame(gameId: string) {
-        await redis.hset(`user:${this.id}`, {
-            currentGame: gameId
-        });
+        this._gameId = gameId;
+        await UserRepository.saveUser(this);
     }
     
     async clearGame(): Promise<void> {
-        await redis.hdel(`user:${this.id}`, 'gameId');
         this._gameId = null;
+        await UserRepository.saveUser(this);
     }
 
     async saveToRedis(): Promise<void> {
-        await redis.hset(`user:${this.id}`, {
-            connected: this.socket.readyState === WebSocket.OPEN,
-            gameId: this._gameId || ''
-        });
+        await UserRepository.saveUser(this);
     }
 
     async deleteFromRedis(): Promise<void> {
-        await redis.del(`user:${this.id}`);
+        await UserRepository.deleteUser(this.id);
     }
 
     // For debugging purposes
     async getRedisState() {
-        return redis.hgetall(`user:${this.id}`);
+        return UserRepository.getUser(this.id);
     }
 }
+
