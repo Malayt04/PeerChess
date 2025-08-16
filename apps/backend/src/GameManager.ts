@@ -1,135 +1,233 @@
-import WebSocket from "ws";
-import { Game } from "./Game";
-import { User } from "./User";
-import { INIT_GAME, MOVE, MESSAGE, INVALID_MOVE } from "./message";
-import { GameRepository } from "./GameRepository";
-import { UserRepository } from "./UserRepository";
-import { move } from "./types";
+import { GAME_OVER, INIT_GAME, MOVE, FORFEIT, DRAW_OFFER, RECONNECT } from "./constants"
+import { Game } from "./Game"
+import { Player } from "./Player"
+import { move } from "./types"
+import { generateGameId } from './utils';
 
 export class GameManager {
-    private static instance: GameManager | null = null;
-    private pendingUser: User | null = null;
+    games: Map<string, Game>
+    pendingUser: Player | null
+    private static instance: GameManager
+    private playerGameMap: Map<string, string> 
 
-    private constructor() {}
+    private constructor() {
+        this.games = new Map<string, Game>()
+        this.pendingUser = null
+        this.playerGameMap = new Map<string, string>()
+    }
 
     public static getInstance(): GameManager {
-        if (!GameManager.instance) {
-            GameManager.instance = new GameManager();
+        if (!this.instance) {
+            this.instance = new GameManager()
         }
-        return GameManager.instance;
+        return this.instance
     }
 
-    public async addUser(socket: WebSocket) {
-        const user = new User(socket);
-        await user.saveToRedis();
-
-        console.log(`User connected: ${user.id}`);
-        this.setupMessageHandlers(user);
-
-        socket.on("close", () => this.handleDisconnect(user));
-        socket.on("error", (err) => console.error(`WS error for ${user.id}:`, err));
-    }
-
-    private setupMessageHandlers(user: User) {
-        user.socket?.on("message", async (rawData: string) => {
-            let msg;
-            try {
-                msg = JSON.parse(rawData);
-            } catch (e) {
-                console.error(`Invalid JSON from ${user.id}:`, rawData);
-                return;
-            }
-
-            try {
-                switch (msg.type) {
-                    case INIT_GAME:
-                        await this.handleMatchmaking(user);
-                        break;
-
-                    case MOVE:
-                        await this.handlePlayerMove(user, msg.payload);
-                        break;
-
-                    case MESSAGE:
-                        await this.handleChatMessage(user, msg.payload);
-                        break;
-
-                    default:
-                        console.warn(`Unknown message type: ${msg.type}`);
-                        break;
-                }
-            } catch (err) {
-                console.error(`Handler error for ${user.id}:`, err);
-            }
-        });
-    }
-
-    private async handleMatchmaking(user: User) {
+    addPlayer(player: Player) {
         if (this.pendingUser) {
-            const gameId = `game_${Date.now()}`;
-            const game = new Game(gameId, this.pendingUser, user, true);
-            await GameRepository.saveGame(game);
-
-            console.log(`Game started: ${gameId}`);
-
-            const prevUser = this.pendingUser;
-            this.pendingUser = null;
-
-            await Promise.all([
-                prevUser.linkToGame(gameId),
-                user.linkToGame(gameId)
-            ]);
+            // Create a new game with the pending user and current player
+            const gameId = generateGameId()
+            const game = new Game(gameId, this.pendingUser, player)
+            
+            this.games.set(gameId, game)
+            
+            // Map both players to this game
+            this.playerGameMap.set(this.pendingUser.id, gameId)
+            this.playerGameMap.set(player.id, gameId)
+            
+            // Initialize the game
+            game.initGame()
+            
+            console.log(`[GameManager] Game ${gameId} created between ${this.pendingUser.id} and ${player.id}`)
+            
+            this.pendingUser = null
         } else {
-            this.pendingUser = user;
-            console.log(`User queued: ${user.id}`);
+            // Set this player as pending
+            this.pendingUser = player
+            player.socket.send(JSON.stringify({ type: "WAITING_FOR_OPPONENT"}))
+            console.log(`[GameManager] Player ${player.id} is waiting for an opponent`)
         }
     }
 
-    private async handlePlayerMove(user: User, movePayload: move) {
-        const gameId = await UserRepository.getGameId(user.id);
-        if (!gameId) return;
+    handleMessage(player: Player) {
+        player.socket.on("message", (message: string) => {
+            let msg
+            try {
+                msg = JSON.parse(message)
+            } catch (error) {
+                console.log("[GameManager] Invalid JSON message:", error)
+                return
+            }
 
-        const game = await GameRepository.getGame(gameId);
+            console.log(`[GameManager] Received message from ${player.id}:`, msg.type)
+
+            switch (msg.type) {
+                case INIT_GAME:
+                    this.addPlayer(player)
+                    break
+                case MOVE:
+                    this.handleMove(player, msg.payload.move, msg.payload.gameId)
+                    break
+                case GAME_OVER:
+                    this.handleGameOver(player, msg.payload.gameId)
+                    break
+                case FORFEIT:
+                    this.handleForfeit(player, msg.payload.gameId)
+                    break
+                case DRAW_OFFER:
+                    this.handleDrawOffer(player, msg.payload.gameId)
+                    break
+                case RECONNECT:
+                    this.handleReconnect(player, msg.payload.gameId)
+                    break
+                default:
+                    console.log(`[GameManager] Unknown message type: ${msg.type}`)
+                    break
+            }
+        })
+
+        // Handle player disconnect
+        player.socket.on("disconnect", () => {
+            this.handlePlayerDisconnect(player)
+        })
+    }
+
+    handleMove(player: Player, move: move, gameId: string) {
+        const game = this.games.get(gameId)
         if (!game) {
-            console.warn(`Missing game ${gameId} for ${user.id}`);
-            return;
+            console.log(`[GameManager] Game ${gameId} not found`)
+            return
         }
 
-        try {
-            await game.makeMove(user.socket!, movePayload);
-        } catch (err) {
-            console.error(`Move error in ${gameId} from ${user.id}:`, err, movePayload);
-            user.socket?.send(JSON.stringify({
-                type: INVALID_MOVE,
-                payload: { message: "Invalid move" }
-            }));
+        game.makeMove(player, move)
+    }
+
+    handleGameOver(player: Player, gameId: string) {
+        const game = this.games.get(gameId)
+        if (!game) {
+            console.log(`[GameManager] Game ${gameId} not found`)
+            return
         }
+
+        // Clean up the game
+        this.cleanupGame(gameId)
+        console.log(`[GameManager] Game ${gameId} ended and cleaned up`)
     }
 
-    private async handleChatMessage(sender: User, text: string) {
-        const gameId = await UserRepository.getGameId(sender.id);
-        if (!gameId) return;
+    handleForfeit(player: Player, gameId: string) {
+        const game = this.games.get(gameId)
+        if (!game) {
+            console.log(`[GameManager] Game ${gameId} not found`)
+            return
+        }
 
-        const game = await GameRepository.getGame(gameId);
-        game?.sendMessage(text, sender.socket!);
+        game.forfeit(player)
+        this.cleanupGame(gameId)
+        console.log(`[GameManager] Player ${player.id} forfeited game ${gameId}`)
     }
 
-    private async handleDisconnect(user: User) {
-        console.log(`User disconnected: ${user.id}`);
+    handleDrawOffer(player: Player, gameId: string) {
+        const game = this.games.get(gameId)
+        if (!game) {
+            console.log(`[GameManager] Game ${gameId} not found`)
+            return
+        }
 
-        const gameId = await UserRepository.getGameId(user.id);
+        game.offerDraw(player)
+        console.log(`[GameManager] Player ${player.id} offered draw in game ${gameId}`)
+    }
+
+    handleReconnect(player: Player, gameId: string) {
+        const game = this.games.get(gameId)
+        if (!game) {
+            console.log(`[GameManager] Game ${gameId} not found for reconnection`)
+            return
+        }
+
+        // Send current game state to reconnecting player
+        const gameState = game.getGameState()
+        player.socket.send(JSON.stringify({
+            type: "GAME_STATE",
+            payload: gameState
+        }))
+
+        console.log(`[GameManager] Player ${player.id} reconnected to game ${gameId}`)
+    }
+
+    handlePlayerDisconnect(player: Player) {
+        // Remove from pending if they were waiting
+        if (this.pendingUser && this.pendingUser.id === player.id) {
+            this.pendingUser = null
+            console.log(`[GameManager] Pending player ${player.id} disconnected`)
+            return
+        }
+
+        // Find their active game
+        const gameId = this.playerGameMap.get(player.id)
         if (gameId) {
-            const game = await GameRepository.getGame(gameId);
-            // Let the Game handle its own disconnect timeout
-            if (game) {
-                game.handlePlayerDisconnect?.(user); 
+            const game = this.games.get(gameId)
+            if (game && game.isGameActive) {
+                // For now, we'll just log the disconnect
+                // You might want to pause the game or handle differently
+                console.log(`[GameManager] Player ${player.id} disconnected from active game ${gameId}`)
+                
+                // Optional: Auto-forfeit after some time or pause the game
+                // game.forfeit(player);
+                // this.cleanupGame(gameId);
             }
         }
+    }
 
-        if (this.pendingUser?.id === user.id) {
-            this.pendingUser = null;
+
+    private cleanupGame(gameId: string) {
+        const game = this.games.get(gameId)
+        if (game) {
+            // Clean up the game resources
+            game.destroy()
+            
+            // Remove players from the map
+            if (game.white && game.white.id) {
+                this.playerGameMap.delete(game.white.id)
+            }
+            if (game.black && game.black.id) {
+                this.playerGameMap.delete(game.black.id)
+            }
+            
+            // Remove the game
+            this.games.delete(gameId)
         }
+    }
 
-        await user.deleteFromRedis();
+    // Utility methods
+    getActiveGamesCount(): number {
+        return this.games.size
+    }
+
+    getPlayerGame(playerId: string): Game | null {
+        const gameId = this.playerGameMap.get(playerId)
+        return gameId ? this.games.get(gameId) || null : null
+    }
+
+    isPlayerInGame(playerId: string): boolean {
+        return this.playerGameMap.has(playerId)
+    }
+
+    // Method to get game statistics
+    getGameStats() {
+        return {
+            activeGames: this.games.size,
+            pendingPlayers: this.pendingUser ? 1 : 0,
+            totalPlayersInGames: this.playerGameMap.size
+        }
+    }
+
+    // Method to force end a game (admin function)
+    forceEndGame(gameId: string, reason: string = "Force ended by admin") {
+        const game = this.games.get(gameId)
+        if (game) {
+            // You might want to add a forceEnd method to the Game class
+            console.log(`[GameManager] Force ending game ${gameId}: ${reason}`)
+            this.cleanupGame(gameId)
+        }
     }
 }

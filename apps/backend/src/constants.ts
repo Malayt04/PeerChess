@@ -1,4 +1,3 @@
-import { CastleIcon as ChessKnight } from 'lucide-react';
 export const INIT_GAME = 'INIT_GAME'
 export const MOVE = 'MOVE'
 export const GAME_OVER = 'GAME_OVER'
@@ -8,3 +7,7 @@ export const WEBRTC_ANSWER = "WEBRTC_ANSWER"
 export const ICE_CANDIDATE = "ICE_CANDIDATE"
 export const CLOCK_UPDATE = "CLOCK_UPDATE"
 export const MESSAGE = "MESSAGE"
+export const INVALID_TURN = "INVALID_TURN"
+export const FORFEIT = "FORFEIT"
+export const DRAW_OFFER = "DRAW_OFFER"
+export const RECONNECT = "RECONNECT"
