@@ -1,4 +1,5 @@
 import { Player } from "./Player"
+import WebSocket from "ws"
 
 export const sendPlayer = (player: Player, message: any) => {
     if(player && player.socket.readyState === WebSocket.OPEN){

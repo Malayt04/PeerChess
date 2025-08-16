@@ -11,7 +11,7 @@ import {
 } from "./constants";
 import { Player } from "./Player";
 
-import { Worker } from "mediasoup/node/lib/types";
+import { Worker, Router, DtlsParameters, MediaKind, Producer, RtpCapabilities, RtpParameters, Transport } from "mediasoup/node/lib/types";
 
 export class Game {
   id: string;
@@ -22,17 +22,47 @@ export class Game {
   board: Chess;
   moveCount: number = 0;
   isGameActive: boolean = false;
+  public router!: Router
+  private transports = new Map<string, Transport>();
+    private producers = new Map<string, Producer>();
+    private consumers = new Map<string, any>();
+
+
   private clockInterval: NodeJS.Timeout | null = null;
   private gameStartTime: number = 0;
   private lastMoveTime: number = 0;
+  private worker: Worker
 
-  constructor(id: string, white: Player, black: Player) {
+  constructor(id: string, white: Player, black: Player, worker: Worker) {
     this.id = id;
     this.white = white;
     this.black = black;
     this.board = new Chess();
+    this.worker = worker
+    this.createRouter()
   }
+  
 
+    private async createRouter() {
+        this.router = await this.worker.createRouter({
+            mediaCodecs: [
+                {
+                    kind: "audio",
+                    mimeType: "audio/opus",
+                    clockRate: 48000,
+                    channels: 2,
+                },
+                {
+                    kind: "video",
+                    mimeType: "video/VP8",
+                    clockRate: 90000,
+                    parameters: {
+                        "x-google-start-bitrate": 1000,
+                    },
+                },
+            ],
+        });
+    }
   initGame() {
     this.isGameActive = true;
     this.gameStartTime = Date.now();
@@ -252,6 +282,24 @@ export class Game {
   destroy() {
     this.isGameActive = false;
     this.stopClock();
+    
+    // Clean up MediaSoup resources
+    this.consumers.forEach(consumer => {
+      consumer.close();
+    });
+    this.consumers.clear();
+    
+    this.producers.forEach(producer => {
+      producer.close();
+    });
+    this.producers.clear();
+    
+    this.transports.forEach(transport => {
+      transport.close();
+    });
+    this.transports.clear();
+    
+    console.log(`[Game ${this.id}] Cleaned up MediaSoup resources`);
   }
 
   getCurrentTurn(): "white" | "black" {
@@ -274,4 +322,107 @@ export class Game {
       isStalemate: this.board.isStalemate(),
     };
   }
+
+  async createWebRtcTransport() {
+        try {
+            // TODO: Use a configurable IP address
+            const transport = await this.router.createWebRtcTransport({
+                listenIps: [{ ip: "0.0.0.0", announcedIp: "127.0.0.1" }],
+                enableUdp: true,
+                enableTcp: true,
+                preferUdp: true,
+            });
+            this.transports.set(transport.id, transport);
+            console.log(`[Game ${this.id}] Created WebRTC transport: ${transport.id}`);
+            return transport;
+        } catch (error) {
+            console.error(`[Game ${this.id}] Error creating WebRTC transport:`, error);
+            throw error;
+        }
+    }
+
+    async connectWebRtcTransport(transportId: string, dtlsParameters: DtlsParameters) {
+        try {
+            const transport = this.transports.get(transportId);
+            if (transport) {
+                await transport.connect({ dtlsParameters });
+                console.log(`[Game ${this.id}] Connected WebRTC transport: ${transportId}`);
+            } else {
+                console.log(`[Game ${this.id}] Transport not found: ${transportId}`);
+            }
+        } catch (error) {
+            console.error(`[Game ${this.id}] Error connecting WebRTC transport:`, error);
+            throw error;
+        }
+    }
+
+    async produce(player: Player, transportId: string, rtpParameters: RtpParameters, kind: MediaKind): Promise<Producer> {
+        try {
+            const transport = this.transports.get(transportId);
+            if (!transport) {
+                throw new Error("Transport not found");
+            }
+            const producer = await transport.produce({ kind, rtpParameters });
+            this.producers.set(producer.id, producer);
+            
+            console.log(`[Game ${this.id}] Created producer: ${producer.id} (${kind})`);
+
+            // Notify the other player that a new producer is available
+            const otherPlayer = player.id === this.white.id ? this.black : this.white;
+            sendPlayer(otherPlayer, { type: "NEW_PRODUCER", payload: { producerId: producer.id } });
+
+            return producer;
+        } catch (error) {
+            console.error(`[Game ${this.id}] Error producing media:`, error);
+            throw error;
+        }
+    }
+
+    async consume(player: Player, transportId: string, producerId: string, rtpCapabilities: RtpCapabilities) {
+        try {
+            const transport = this.transports.get(transportId);
+            if (!transport) {
+                console.log(`[Game ${this.id}] Transport not found for consumption: ${transportId}`);
+                return;
+            }
+            
+            if (!this.producers.has(producerId)) {
+                console.log(`[Game ${this.id}] Producer not found for consumption: ${producerId}`);
+                return;
+            }
+            
+            if (!this.router.canConsume({ producerId, rtpCapabilities })) {
+                console.log(`[Game ${this.id}] Cannot consume producer: ${producerId}`);
+                return;
+            }
+
+            const consumer = await transport.consume({
+                producerId,
+                rtpCapabilities,
+                paused: true,
+            });
+            this.consumers.set(consumer.id, consumer);
+            
+            console.log(`[Game ${this.id}] Created consumer: ${consumer.id} for producer: ${producerId}`);
+            return consumer;
+        } catch (error) {
+            console.error(`[Game ${this.id}] Error consuming media:`, error);
+            return null;
+        }
+    }
+
+    async resume(consumerId: string) {
+        try {
+            const consumer = this.consumers.get(consumerId);
+            if (consumer) {
+                await consumer.resume();
+                console.log(`[Game ${this.id}] Resumed consumer: ${consumerId}`);
+            } else {
+                console.log(`[Game ${this.id}] Consumer not found for resume: ${consumerId}`);
+            }
+        } catch (error) {
+            console.error(`[Game ${this.id}] Error resuming consumer:`, error);
+            throw error;
+        }
+    }
 }

@@ -4,6 +4,8 @@ import { Chess } from 'chess.js';
 import { Chessboard } from 'react-chessboard';
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogTitle } from '@radix-ui/react-alert-dialog';
+import { MediaSoupService } from '@/service/MediaSoupService';
+import { VideoControls } from '@/components/VideoControls';
 
 function Game() {
     const socket = useSocket();
@@ -31,6 +33,14 @@ function Game() {
     const messagesEndRef = useRef<HTMLDivElement>(null);
     
     const socketRef = useRef<WebSocket | null>(null);
+    const mediaServiceRef = useRef<MediaSoupService | null>(null);
+    const localVideoRef = useRef<HTMLVideoElement>(null);
+    const remoteVideoRef = useRef<HTMLVideoElement>(null);
+    const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+    const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+    const [isVideoEnabled, setIsVideoEnabled] = useState(true);
+    const [isAudioEnabled, setIsAudioEnabled] = useState(true);
+    const [isMediaConnected, setIsMediaConnected] = useState(false);
     
     // Create Chess instance only when needed, memoized by FEN
     const chess = useMemo(() => new Chess(fen), [fen]);
@@ -150,6 +160,94 @@ function Game() {
         return () => window.removeEventListener("resize", handleResize);
     }, []);
 
+    // Initialize media devices
+    const initMedia = useCallback(async () => {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: true, 
+                audio: true 
+            });
+            
+            setLocalStream(stream);
+            if (localVideoRef.current) {
+                localVideoRef.current.srcObject = stream;
+            }
+            
+            return stream;
+        } catch (err) {
+            console.error('Error accessing media devices:', err);
+            setError('Could not access camera or microphone. Please check permissions.');
+            return null;
+        }
+    }, []);
+
+    // Initialize MediaSoup connection
+    const initMediaSoup = useCallback(async (stream: MediaStream) => {
+        if (!socketRef.current || !gameId) return;
+        
+        try {
+            mediaServiceRef.current = new MediaSoupService(socketRef.current, gameId);
+            
+            // Listen for remote stream
+            mediaServiceRef.current.on('remoteStream', (stream: MediaStream) => {
+                setRemoteStream(stream);
+                if (remoteVideoRef.current) {
+                    remoteVideoRef.current.srcObject = stream;
+                }
+                setIsMediaConnected(true);
+            });
+            
+            // Join the media room
+            await mediaServiceRef.current.joinRoom(stream);
+        } catch (err) {
+            console.error('Error initializing MediaSoup:', err);
+            setError('Failed to initialize video call');
+        }
+    }, [gameId]);
+
+    // Toggle video on/off
+    const toggleVideo = useCallback(() => {
+        if (localStream) {
+            const videoTracks = localStream.getVideoTracks();
+            videoTracks.forEach(track => {
+                track.enabled = !isVideoEnabled;
+            });
+            setIsVideoEnabled(!isVideoEnabled);
+        }
+    }, [localStream, isVideoEnabled]);
+
+    // Toggle audio on/off
+    const toggleAudio = useCallback(() => {
+        if (localStream) {
+            const audioTracks = localStream.getAudioTracks();
+            audioTracks.forEach(track => {
+                track.enabled = !isAudioEnabled;
+            });
+            setIsAudioEnabled(!isAudioEnabled);
+        }
+    }, [localStream, isAudioEnabled]);
+
+    // Cleanup media resources
+    const cleanupMedia = useCallback(() => {
+        if (localStream) {
+            localStream.getTracks().forEach(track => track.stop());
+            setLocalStream(null);
+        }
+        
+        if (mediaServiceRef.current) {
+            mediaServiceRef.current.close();
+            mediaServiceRef.current = null;
+        }
+        
+        setIsMediaConnected(false);
+        setRemoteStream(null);
+    }, [localStream]);
+
+    // End the video call
+    const endCall = useCallback(() => {
+        cleanupMedia();
+    }, [cleanupMedia]);
+
     useEffect(() => {
         if (!socket) return;
         
@@ -161,6 +259,26 @@ function Game() {
             socket.removeEventListener('message', handleMessage);
         };
     }, [socket, handleMessage]);
+
+    // Initialize media when game starts
+    useEffect(() => {
+        if (gameStarted && gameId && !localStream) {
+            const initializeMedia = async () => {
+                const stream = await initMedia();
+                if (stream) {
+                    initMediaSoup(stream);
+                }
+            };
+            initializeMedia();
+        }
+        
+        // Cleanup on unmount or when game ends
+        return () => {
+            if (!gameStarted) {
+                cleanupMedia();
+            }
+        };
+    }, [gameStarted, gameId, localStream, initMedia, initMediaSoup, cleanupMedia]);
 
     const makeMove = useCallback((move: { from: string; to: string }) => {
         if (socketRef.current?.readyState === WebSocket.OPEN) {
@@ -348,7 +466,60 @@ function Game() {
             )}
 
             <div className="flex justify-center items-center flex-1">
-                <div className="flex flex-col items-center gap-6">
+                <div className="flex flex-col items-center gap-6 w-full max-w-6xl">
+                    {/* Video Call Section */}
+                    {gameStarted && (
+                        <div className="w-full">
+                            <div className="flex flex-col md:flex-row gap-4 w-full">
+                                {/* Local Video */}
+                                <div className="relative flex-1 bg-black rounded-lg overflow-hidden aspect-video">
+                                    <video 
+                                        ref={localVideoRef}
+                                        autoPlay 
+                                        muted 
+                                        playsInline
+                                        className="w-full h-full object-cover"
+                                    />
+                                    <div className="absolute bottom-2 left-2 bg-black bg-opacity-50 text-white px-2 py-1 rounded text-sm">
+                                        You
+                                    </div>
+                                    {!isVideoEnabled && (
+                                        <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-75">
+                                            <span className="text-white">Camera Off</span>
+                                        </div>
+                                    )}
+                                </div>
+                                
+                                {/* Remote Video */}
+                                <div className="relative flex-1 bg-black rounded-lg overflow-hidden aspect-video">
+                                    <video 
+                                        ref={remoteVideoRef}
+                                        autoPlay 
+                                        playsInline
+                                        className="w-full h-full object-cover"
+                                    />
+                                    <div className="absolute bottom-2 left-2 bg-black bg-opacity-50 text-white px-2 py-1 rounded text-sm">
+                                        Opponent
+                                    </div>
+                                    {!isMediaConnected && (
+                                        <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
+                                            <span className="text-white">Waiting for opponent...</span>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                            
+                            {/* Video Controls */}
+                            <VideoControls
+                                isVideoEnabled={isVideoEnabled}
+                                isAudioEnabled={isAudioEnabled}
+                                isMediaConnected={isMediaConnected}
+                                onToggleVideo={toggleVideo}
+                                onToggleAudio={toggleAudio}
+                                onEndCall={endCall}
+                            />
+                        </div>
+                    )}
                     
                     {/* Opponent's clock */}
                     <div className="bg-[#272522] text-amber-500 text-4xl font-bold text-center p-4 rounded-lg shadow-lg min-w-[200px]">

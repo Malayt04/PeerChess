@@ -3,6 +3,22 @@ import { GameManager } from "./GameManager";
 import { Player } from "./Player";
 import { randomString } from "./utils";
 
+import * as mediasoup from "mediasoup";
+import {Worker} from "mediasoup/node/lib/types"
+
+let mediasoupWorker: Worker;
+
+
+async function startMediasoup() {
+  mediasoupWorker = await mediasoup.createWorker({
+    logLevel: "warn",
+  });
+  console.log("Mediasoup worker started");
+}
+
+startMediasoup()
+
+
 const wss = new WebSocketServer({ port: 8080 });
 const gameManager = GameManager.getInstance();
 
@@ -13,7 +29,7 @@ wss.on("connection", (ws) => {
 
     console.log(`User Connected: ${username} (${id})`);
     
-    gameManager.handleMessage(player);
+    gameManager.handleMessage(player, mediasoupWorker);
 });
 
 console.log("Server started on port 8080");
