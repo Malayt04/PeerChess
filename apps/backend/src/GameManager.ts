@@ -86,45 +86,45 @@ export class GameManager {
       );
 
       switch (msg.type) {
-        case INIT_GAME:
-          this.addPlayer(player, worker);
-          break;
-        case MOVE:
-          this.handleMove(player, msg.payload.move, msg.payload.gameId);
-          break;
-        case GAME_OVER:
-          this.handleGameOver(player, msg.payload.gameId);
-          break;
-        case FORFEIT:
-          this.handleForfeit(player, msg.payload.gameId);
-          break;
-        case DRAW_OFFER:
-          this.handleDrawOffer(player, msg.payload.gameId);
-          break;
-        case RECONNECT:
-          this.handleReconnect(player, msg.payload.gameId);
-          break;
-        case GET_ROUTER_RTP_CAPABILITIES:
-          this.handleGetRouterRtpCapabilities(player, msg.payload.gameId);
-          break;
-        case CREATE_WEBRTC_TRANSPORT:
-          this.handleCreateWebRtcTransport(player, msg.payload.gameId);
-          break;
-        case CONNECT_WEBRTC_TRANSPORT:
-          this.handleConnectWebRtcTransport(player, msg.payload);
-          break;
-        case PRODUCE:
-          this.handleProduce(player, msg.payload);
-          break;
-        case CONSUME:
-          this.handleConsume(player, msg.payload);
-          break;
-        case RESUME:
-          this.handleResume(player, msg.payload);
-          break;
-        default:
-          console.log(`[GameManager] Unknown message type: ${msg.type}`);
-          break;
+    case INIT_GAME:
+        this.addPlayer(player, worker);
+        break;
+    case MOVE:
+        this.handleMove(player, msg.payload.move, msg.payload.gameId);
+        break;
+    case GAME_OVER:
+        this.handleGameOver(player, msg.payload.gameId);
+        break;
+    case FORFEIT:
+        this.handleForfeit(player, msg.payload.gameId);
+        break;
+    case DRAW_OFFER:
+        this.handleDrawOffer(player, msg.payload.gameId);
+        break;
+    case RECONNECT:
+        this.handleReconnect(player, msg.payload.gameId);
+        break;
+    case GET_ROUTER_RTP_CAPABILITIES:
+        this.handleGetRouterRtpCapabilities(player, msg.payload.gameId);
+        break;
+    case CREATE_WEBRTC_TRANSPORT:
+        this.handleCreateWebRtcTransport(player, msg.payload.gameId);
+        break;
+    case CONNECT_WEBRTC_TRANSPORT:
+        this.handleConnectWebRtcTransport(player, msg.payload);
+        break;
+    case PRODUCE:
+        this.handleProduce(player, msg.payload);
+        break;
+    case CONSUME:
+        this.handleConsume(player, msg.payload);
+        break;
+    case RESUME:
+        this.handleResume(player, msg.payload);
+        break;
+    default:
+        console.log(`[GameManager] Unknown message type: ${msg.type}`);
+        break;
       }
     });
 
@@ -134,39 +134,59 @@ export class GameManager {
     });
   }
 
-  handleGetRouterRtpCapabilities(player: Player, gameId: string) {
-        const game = this.games.get(gameId);
-        if (game) {
+handleGetRouterRtpCapabilities(player: Player, gameId: string) {
+    console.log(`[GameManager] Getting RTP capabilities for game ${gameId}`);
+    const game = this.games.get(gameId);
+    if (game) {
+        try {
+            const rtpCapabilities = game.router.rtpCapabilities;
+            console.log(`[GameManager] Sending RTP capabilities for game ${gameId}`);
             sendPlayer(player, {
                 type: "GET_ROUTER_RTP_CAPABILITIES",
-                payload: game.router.rtpCapabilities,
+                payload: rtpCapabilities,
             });
-        } else {
-            console.log(`[GameManager] Game ${gameId} not found for RTP capabilities request`);
+        } catch (error) {
+            console.error(`[GameManager] Error getting RTP capabilities:`, error);
+            sendPlayer(player, {
+                type: "ERROR",
+                payload: { message: "Failed to get RTP capabilities" },
+            });
         }
+    } else {
+        console.log(`[GameManager] Game ${gameId} not found for RTP capabilities request`);
+        sendPlayer(player, {
+            type: "ERROR",
+            payload: { message: `Game ${gameId} not found` },
+        });
     }
+}
 
-    async handleCreateWebRtcTransport(player: Player, gameId: string) {
-        const game = this.games.get(gameId);
-        if (game) {
-            try {
-                const transport = await game.createWebRtcTransport();
-                sendPlayer(player, {
-                    type: "CREATE_WEBRTC_TRANSPORT",
-                    payload: {
-                        id: transport.id,
-                        iceParameters: transport.iceParameters,
-                        iceCandidates: transport.iceCandidates,
-                        dtlsParameters: transport.dtlsParameters,
-                    },
-                });
-            } catch (error) {
-                console.error(`[GameManager] Error creating WebRTC transport for game ${gameId}:`, error);
-            }
-        } else {
-            console.log(`[GameManager] Game ${gameId} not found for WebRTC transport creation`);
+async handleCreateWebRtcTransport(player: Player, gameId: string) {
+    console.log(`[GameManager] Creating WebRTC transport for game ${gameId}`);
+    const game = this.games.get(gameId);
+    if (game) {
+        try {
+            const transportInfo = await game.createWebRtcTransport();
+            console.log(`[GameManager] Created transport ${transportInfo.id} for game ${gameId}`);
+            sendPlayer(player, {
+                type: "CREATE_WEBRTC_TRANSPORT",
+                payload: transportInfo,
+            });
+        } catch (error) {
+            console.error(`[GameManager] Error creating WebRTC transport for game ${gameId}:`, error);
+            sendPlayer(player, {
+                type: "ERROR",
+                payload: { message: "Failed to create transport" },
+            });
         }
+    } else {
+        console.log(`[GameManager] Game ${gameId} not found for WebRTC transport creation`);
+        sendPlayer(player, {
+            type: "ERROR",
+            payload: { message: `Game ${gameId} not found` },
+        });
     }
+}
 
     async handleConnectWebRtcTransport(player: Player, payload: { gameId: string, transportId: string, dtlsParameters: DtlsParameters }) {
         const game = this.games.get(payload.gameId);

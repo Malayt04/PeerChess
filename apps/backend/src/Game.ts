@@ -26,6 +26,7 @@ export class Game {
   private transports = new Map<string, Transport>();
     private producers = new Map<string, Producer>();
     private consumers = new Map<string, any>();
+          private routerReady: boolean = false;
 
 
   private clockInterval: NodeJS.Timeout | null = null;
@@ -44,24 +45,42 @@ export class Game {
   
 
     private async createRouter() {
-        this.router = await this.worker.createRouter({
-            mediaCodecs: [
-                {
-                    kind: "audio",
-                    mimeType: "audio/opus",
-                    clockRate: 48000,
-                    channels: 2,
-                },
-                {
-                    kind: "video",
-                    mimeType: "video/VP8",
-                    clockRate: 90000,
-                    parameters: {
-                        "x-google-start-bitrate": 1000,
+        try {
+            console.log(`[Game ${this.id}] Creating router...`);
+            this.router = await this.worker.createRouter({
+                mediaCodecs: [
+                    {
+                        kind: "audio",
+                        mimeType: "audio/opus",
+                        clockRate: 48000,
+                        channels: 2,
                     },
-                },
-            ],
-        });
+                    {
+                        kind: "video",
+                        mimeType: "video/VP8",
+                        clockRate: 90000,
+                        parameters: {
+                            "x-google-start-bitrate": 1000,
+                        },
+                    },
+                    {
+                        kind: "video",
+                        mimeType: "video/H264",
+                        clockRate: 90000,
+                        parameters: {
+                            "packetization-mode": 1,
+                            "profile-level-id": "4d0032",
+                            "level-asymmetry-allowed": 1,
+                        },
+                    },
+                ],
+            });
+            this.routerReady = true;
+            console.log(`[Game ${this.id}] Router created successfully`);
+        } catch (error) {
+            console.error(`[Game ${this.id}] Failed to create router:`, error);
+            this.routerReady = false;
+        }
     }
   initGame() {
     this.isGameActive = true;
@@ -323,24 +342,40 @@ export class Game {
     };
   }
 
-  async createWebRtcTransport() {
+async createWebRtcTransport() {
+        if (!this.routerReady || !this.router) {
+            throw new Error('Router not ready');
+        }
+        
         try {
-            // TODO: Use a configurable IP address
+            console.log(`[Game ${this.id}] Creating WebRTC transport...`);
             const transport = await this.router.createWebRtcTransport({
-                listenIps: [{ ip: "0.0.0.0", announcedIp: "127.0.0.1" }],
+                listenIps: [{ 
+                    ip: "0.0.0.0", 
+                    announcedIp: process.env.MEDIASOUP_ANNOUNCED_IP || "127.0.0.1" 
+                }],
                 enableUdp: true,
                 enableTcp: true,
                 preferUdp: true,
+                initialAvailableOutgoingBitrate: 1000000,
+                maxSctpMessageSize: 262144,
             });
+            
             this.transports.set(transport.id, transport);
             console.log(`[Game ${this.id}] Created WebRTC transport: ${transport.id}`);
-            return transport;
+            
+            return {
+                id: transport.id,
+                iceParameters: transport.iceParameters,
+                iceCandidates: transport.iceCandidates,
+                dtlsParameters: transport.dtlsParameters,
+            };
         } catch (error) {
             console.error(`[Game ${this.id}] Error creating WebRTC transport:`, error);
             throw error;
         }
     }
-
+    
     async connectWebRtcTransport(transportId: string, dtlsParameters: DtlsParameters) {
         try {
             const transport = this.transports.get(transportId);
@@ -424,5 +459,9 @@ export class Game {
             console.error(`[Game ${this.id}] Error resuming consumer:`, error);
             throw error;
         }
+    }
+
+        isRouterReady(): boolean {
+        return this.routerReady && !!this.router;
     }
 }
