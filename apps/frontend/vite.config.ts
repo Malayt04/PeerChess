@@ -4,6 +4,9 @@ import path from 'path';
 
 export default defineConfig({
   plugins: [react()],
+  server: {
+    allowedHosts: ['fit-healthy-pony.ngrok-free.app'],
+  },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

@@ -1,0 +1,12 @@
+# The address Caddy will listen on. We'll point ngrok here.
+localhost:8000
+
+# Route WebSocket traffic to the backend server
+handle /ws/* {
+    reverse_proxy localhost:8080
+}
+
+# Route all other traffic to the Vite/React frontend server
+handle {
+    reverse_proxy localhost:5173
+}

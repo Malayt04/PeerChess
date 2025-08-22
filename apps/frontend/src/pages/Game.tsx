@@ -14,7 +14,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 
-// WebRTC Hook Implementation
+// Complete WebRTC Hook Implementation
 function useWebRTC(gameId: string, socket: WebSocket | null) {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
@@ -23,7 +23,7 @@ function useWebRTC(gameId: string, socket: WebSocket | null) {
 
   const startWebRTC = useCallback(async () => {
     try {
-      console.log("Starting WebRTC...");
+      console.log("[Client] Starting WebRTC...");
       
       // Get user media
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -31,6 +31,7 @@ function useWebRTC(gameId: string, socket: WebSocket | null) {
         audio: true
       });
       setLocalStream(stream);
+      console.log("[Client] Local stream obtained");
 
       // Create peer connection
       const configuration = {
@@ -42,26 +43,44 @@ function useWebRTC(gameId: string, socket: WebSocket | null) {
       
       const peerConnection = new RTCPeerConnection(configuration);
       peerConnectionRef.current = peerConnection;
+      console.log("[Client] RTCPeerConnection created");
 
       // Add local stream to peer connection
       stream.getTracks().forEach(track => {
         peerConnection.addTrack(track, stream);
+        console.log("[Client] Track added to peer connection:", track.kind);
       });
 
       // Handle remote stream
       peerConnection.ontrack = (event) => {
-        console.log("Received remote stream");
+        console.log("[Client] Received remote stream");
         setRemoteStream(event.streams[0]);
       };
 
-      // Handle ICE candidates
+      // Handle ICE candidates - FIXED: Check socket before sending
       peerConnection.onicecandidate = (event) => {
-        if (event.candidate && socket) {
-          console.log("Sending ICE candidate");
+        console.log("[Client] ICE candidate event:", event.candidate ? "candidate" : "end-of-candidates");
+        
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+          console.error("[Client] Socket not available for ICE candidate");
+          return;
+        }
+
+        if (event.candidate) {
+          console.log("[Client] Sending ICE candidate to server");
           socket.send(JSON.stringify({
             type: 'ICE_CANDIDATE',
             payload: {
               candidate: event.candidate,
+              gameId: gameId
+            }
+          }));
+        } else {
+          console.log("[Client] Sending end-of-candidates signal");
+          socket.send(JSON.stringify({
+            type: 'ICE_CANDIDATE',
+            payload: {
+              candidate: null,
               gameId: gameId
             }
           }));
@@ -70,113 +89,173 @@ function useWebRTC(gameId: string, socket: WebSocket | null) {
 
       // Handle connection state changes
       peerConnection.onconnectionstatechange = () => {
-        console.log('Connection state:', peerConnection.connectionState);
+        console.log('[Client] Connection state:', peerConnection.connectionState);
+      };
+
+      // Handle ICE connection state changes
+      peerConnection.oniceconnectionstatechange = () => {
+        console.log('[Client] ICE connection state:', peerConnection.iceConnectionState);
       };
 
       setIsWebRTCReady(true);
-      console.log("WebRTC setup complete");
+      console.log("[Client] WebRTC setup complete");
     } catch (error) {
-      console.error("Error starting WebRTC:", error);
+      console.error("[Client] Error starting WebRTC:", error);
       throw error;
     }
   }, [gameId, socket]);
 
   const createOffer = useCallback(async () => {
-    if (!peerConnectionRef.current || !socket) {
-      throw new Error("Peer connection or socket not available");
+    console.log("[Client] createOffer called");
+    
+    if (!peerConnectionRef.current) {
+      console.error("[Client] No peer connection available for offer");
+      throw new Error("Peer connection not available");
+    }
+    
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      console.error("[Client] Socket not available for offer");
+      throw new Error("Socket not available");
     }
 
     try {
-      console.log("Creating offer...");
+      console.log("[Client] Creating offer...");
       const offer = await peerConnectionRef.current.createOffer();
       await peerConnectionRef.current.setLocalDescription(offer);
       
-      socket.send(JSON.stringify({
+      console.log("[Client] Local description set, sending offer to server");
+      console.log("[Client] Offer SDP type:", offer.type);
+      console.log("[Client] Offer SDP size:", offer.sdp?.length || 0);
+
+      const message = {
         type: 'OFFER',
         payload: {
-          offer: offer,
+          sdp: offer,
           gameId: gameId
         }
-      }));
+      };
+
+      console.log("[Client] Sending OFFER message:", JSON.stringify(message, null, 2));
+      socket.send(JSON.stringify(message));
       
-      console.log("Offer sent");
+      console.log("[Client] Offer sent successfully");
     } catch (error) {
-      console.error("Error creating offer:", error);
+      console.error("[Client] Error creating offer:", error);
       throw error;
     }
   }, [gameId, socket]);
 
   const handleOffer = useCallback(async (payload: any) => {
-    if (!peerConnectionRef.current || !socket) {
-      throw new Error("Peer connection or socket not available");
+    console.log("[Client] handleOffer called with payload:", payload);
+    
+    if (!peerConnectionRef.current) {
+      console.error("[Client] No peer connection available for handling offer");
+      throw new Error("Peer connection not available");
+    }
+    
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      console.error("[Client] Socket not available for handling offer");
+      throw new Error("Socket not available");
     }
 
     try {
-      console.log("Handling offer...");
-      await peerConnectionRef.current.setRemoteDescription(payload.offer);
+      console.log("[Client] Handling incoming offer...");
+      
+      if (!payload.sdp) {
+        console.error("[Client] No SDP found in offer payload");
+        throw new Error("No SDP found in offer payload");
+      }
+      
+      await peerConnectionRef.current.setRemoteDescription(payload.sdp);
+      console.log("[Client] Remote description set");
       
       const answer = await peerConnectionRef.current.createAnswer();
       await peerConnectionRef.current.setLocalDescription(answer);
+      console.log("[Client] Answer created and local description set");
       
-      socket.send(JSON.stringify({
+      const message = {
         type: 'ANSWER',
         payload: {
-          answer: answer,
+          sdp: answer,
           gameId: gameId
         }
-      }));
+      };
       
-      console.log("Answer sent");
+      console.log("[Client] Sending ANSWER message:", JSON.stringify(message, null, 2));
+      socket.send(JSON.stringify(message));
+      
+      console.log("[Client] Answer sent successfully");
     } catch (error) {
-      console.error("Error handling offer:", error);
+      console.error("[Client] Error handling offer:", error);
       throw error;
     }
   }, [gameId, socket]);
 
   const handleAnswer = useCallback(async (payload: any) => {
+    console.log("[Client] handleAnswer called with payload:", payload);
+    
     if (!peerConnectionRef.current) {
+      console.error("[Client] No peer connection available for handling answer");
       throw new Error("Peer connection not available");
     }
 
     try {
-      console.log("Handling answer...");
-      await peerConnectionRef.current.setRemoteDescription(payload.answer);
-      console.log("Answer handled successfully");
+      console.log("[Client] Handling incoming answer...");
+      
+      if (!payload.sdp) {
+        console.error("[Client] No SDP found in answer payload");
+        throw new Error("No SDP found in answer payload");
+      }
+      
+      await peerConnectionRef.current.setRemoteDescription(payload.sdp);
+      console.log("[Client] Answer handled successfully");
     } catch (error) {
-      console.error("Error handling answer:", error);
+      console.error("[Client] Error handling answer:", error);
       throw error;
     }
   }, []);
 
   const handleIceCandidate = useCallback(async (payload: any) => {
+    console.log("[Client] handleIceCandidate called:", payload.candidate ? "candidate" : "end-of-candidates");
+    
     if (!peerConnectionRef.current) {
+      console.error("[Client] No peer connection available for ICE candidate");
       throw new Error("Peer connection not available");
     }
 
     try {
-      await peerConnectionRef.current.addIceCandidate(payload.candidate);
-      console.log("ICE candidate added");
+      if (payload.candidate) {
+        await peerConnectionRef.current.addIceCandidate(payload.candidate);
+        console.log("[Client] ICE candidate added successfully");
+      } else {
+        console.log("[Client] Received end-of-candidates signal");
+      }
     } catch (error) {
-      console.error("Error handling ICE candidate:", error);
+      console.error("[Client] Error handling ICE candidate:", error);
       throw error;
     }
   }, []);
 
   const cleanup = useCallback(() => {
-    console.log("Cleaning up WebRTC...");
+    console.log("[Client] Cleaning up WebRTC...");
     
     if (localStream) {
-      localStream.getTracks().forEach(track => track.stop());
+      localStream.getTracks().forEach(track => {
+        track.stop();
+        console.log("[Client] Stopped track:", track.kind);
+      });
       setLocalStream(null);
     }
     
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close();
       peerConnectionRef.current = null;
+      console.log("[Client] RTCPeerConnection closed");
     }
     
     setRemoteStream(null);
     setIsWebRTCReady(false);
+    console.log("[Client] WebRTC cleanup complete");
   }, [localStream]);
 
   return {
@@ -269,10 +348,12 @@ function Game() {
     }
   }, [remoteStream]);
 
-  // Initialize WebRTC when game starts
+  // Initialize WebRTC when game starts - FIXED
   useEffect(() => {
-    if (shouldStartWebRTC && webRTCGameId && !isWebRTCReady) {
+    if (shouldStartWebRTC && webRTCGameId && !isWebRTCReady && socket) {
       console.log("Starting WebRTC for game:", webRTCGameId);
+      console.log("Socket state:", socket.readyState);
+      
       startWebRTC()
         .then(() => {
           console.log("WebRTC initialized successfully");
@@ -282,28 +363,41 @@ function Game() {
           setError("Failed to initialize video call");
         });
     }
-  }, [shouldStartWebRTC, webRTCGameId, isWebRTCReady, startWebRTC]);
+  }, [shouldStartWebRTC, webRTCGameId, isWebRTCReady, startWebRTC, socket]);
 
-  // Handle offer creation when WebRTC is ready and this player is the offerer
+  // Handle offer creation when WebRTC is ready - FIXED with proper delay
   useEffect(() => {
-    if (isWebRTCReady && isOfferer && webRTCGameId) {
-      console.log("Creating offer as offerer");
-      createOffer()
-        .then(() => {
-          console.log("Offer created and sent");
-        })
-        .catch((error) => {
-          console.error("Failed to create offer:", error);
-          setError("Failed to create video call offer");
-        });
-    }
-  }, [isWebRTCReady, isOfferer, createOffer, webRTCGameId]);
+    if (isWebRTCReady && isOfferer && webRTCGameId && socket && socket.readyState === WebSocket.OPEN) {
+      console.log("Creating offer as offerer - all conditions met");
+      
+      // Add a small delay to ensure everything is properly initialized
+      const timer = setTimeout(() => {
+        console.log("Executing delayed offer creation");
+        createOffer()
+          .then(() => {
+            console.log("Offer created and sent successfully");
+          })
+          .catch((error) => {
+            console.error("Failed to create offer:", error);
+            setError("Failed to create video call offer");
+          });
+      }, 1000); // 1 second delay
 
+      return () => clearTimeout(timer);
+    }
+  }, [isWebRTCReady, isOfferer, createOffer, webRTCGameId, socket]);
+
+  // FIXED message handler with comprehensive error handling and logging
   const handleMessage = useCallback(
     async (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data);
-        console.log("Received message:", data.type, data);
+        console.log("=== Received message ===");
+        console.log("Type:", data.type);
+        console.log("Payload:", data.payload);
+        console.log("Socket state:", socket?.readyState);
+        console.log("WebRTC ready:", isWebRTCReady);
+        console.log("========================");
 
         switch (data.type) {
           case "INIT_GAME":
@@ -313,21 +407,22 @@ function Game() {
             setWebRTCGameId(data.payload.gameId || "");
             setWaitingForOpponent(false);
             setGameStarted(true);
-            setGameStatus(
-              `Game started! You are playing as ${data.payload.color}`
-            );
+            setGameStatus(`Game started! You are playing as ${data.payload.color}`);
             setError(null);
             setShouldStartWebRTC(true);
-            setIsOfferer(false);
+            setIsOfferer(false); // This player will receive the offer
             break;
 
           case "START_OFFER":
-            console.log("Received START_OFFER, setting as offerer");
+            console.log("=== START_OFFER RECEIVED ===");
+            console.log("Setting as offerer for game:", data.payload?.gameId);
             setIsOfferer(true);
+            
             if (data.payload?.gameId) {
               setWebRTCGameId(data.payload.gameId);
             }
             setShouldStartWebRTC(true);
+            console.log("START_OFFER processing complete");
             break;
 
           case "STATUS":
@@ -339,7 +434,7 @@ function Game() {
               setGameId(data.payload.gameId);
               setWebRTCGameId(data.payload.gameId);
               setShouldStartWebRTC(true);
-              setIsOfferer(false);
+              setIsOfferer(false); // This player will receive the offer
             }
             break;
 
@@ -349,51 +444,80 @@ function Game() {
             break;
 
           case "OFFER":
-            console.log("Received WebRTC offer");
+            console.log("=== OFFER RECEIVED ===");
+            console.log("WebRTC ready:", isWebRTCReady);
+            console.log("Payload:", data.payload);
+            
             if (isWebRTCReady) {
               try {
                 await handleOffer(data.payload);
                 console.log("Offer handled successfully");
               } catch (error) {
                 console.error("Failed to handle offer:", error);
-                setError("Failed to handle video call offer");
+                setError("Failed to handle video call offer: " + error.message);
               }
             } else {
-              console.log("WebRTC not ready, queuing offer...");
-              // Queue the offer to handle when WebRTC is ready
-              setTimeout(async () => {
+              console.log("WebRTC not ready, waiting and retrying offer...");
+              // Retry mechanism for delayed WebRTC readiness
+              let retries = 0;
+              const maxRetries = 10;
+              const retryInterval = setInterval(async () => {
+                retries++;
                 if (isWebRTCReady) {
+                  console.log(`Retry ${retries}: WebRTC now ready, handling offer`);
+                  clearInterval(retryInterval);
                   try {
                     await handleOffer(data.payload);
+                    console.log("Delayed offer handled successfully");
                   } catch (error) {
-                    console.error("Failed to handle queued offer:", error);
+                    console.error("Failed to handle delayed offer:", error);
+                    setError("Failed to handle video call offer: " + error.message);
                   }
+                } else if (retries >= maxRetries) {
+                  console.error("Max retries reached, WebRTC still not ready");
+                  clearInterval(retryInterval);
+                  setError("WebRTC connection timeout");
+                } else {
+                  console.log(`Retry ${retries}: WebRTC still not ready`);
                 }
-              }, 1000);
+              }, 500);
             }
             break;
 
           case "ANSWER":
-            console.log("Received WebRTC answer");
+            console.log("=== ANSWER RECEIVED ===");
+            console.log("WebRTC ready:", isWebRTCReady);
+            console.log("Payload:", data.payload);
+            
             if (isWebRTCReady) {
               try {
                 await handleAnswer(data.payload);
                 console.log("Answer handled successfully");
               } catch (error) {
                 console.error("Failed to handle answer:", error);
-                setError("Failed to handle video call answer");
+                setError("Failed to handle video call answer: " + error.message);
               }
+            } else {
+              console.error("WebRTC not ready when answer received");
+              setError("WebRTC not ready for answer");
             }
             break;
 
           case "ICE_CANDIDATE":
-            console.log("Received ICE candidate");
+            console.log("=== ICE_CANDIDATE RECEIVED ===");
+            console.log("WebRTC ready:", isWebRTCReady);
+            console.log("Candidate:", data.payload.candidate ? "present" : "null");
+            
             if (isWebRTCReady) {
               try {
                 await handleIceCandidate(data.payload);
+                console.log("ICE candidate handled successfully");
               } catch (error) {
                 console.error("Failed to handle ICE candidate:", error);
+                // Don't show error to user for ICE candidate failures
               }
+            } else {
+              console.error("WebRTC not ready when ICE candidate received");
             }
             break;
 
@@ -475,7 +599,7 @@ function Game() {
         setError("Failed to process server message");
       }
     },
-    [isWebRTCReady, handleOffer, handleAnswer, handleIceCandidate, cleanup]
+    [isWebRTCReady, handleOffer, handleAnswer, handleIceCandidate, cleanup, socket]
   );
 
   useEffect(() => {
@@ -706,6 +830,23 @@ function Game() {
     cleanup();
   };
 
+  // Debug component for development
+  const WebRTCDebugInfo = () => {
+    if (process.env.NODE_ENV !== "development") return null;
+    
+    return (
+      <div className="text-xs text-gray-400 space-y-1 p-2 bg-gray-800 rounded mt-4">
+        <div>WebRTC Ready: {isWebRTCReady ? "✅" : "❌"}</div>
+        <div>Local Stream: {localStream ? "✅" : "❌"}</div>
+        <div>Remote Stream: {remoteStream ? "✅" : "❌"}</div>
+        <div>Is Offerer: {isOfferer ? "✅" : "❌"}</div>
+        <div>Game ID: {webRTCGameId || "None"}</div>
+        <div>Socket State: {socket?.readyState || "N/A"}</div>
+        <div>Should Start WebRTC: {shouldStartWebRTC ? "✅" : "❌"}</div>
+      </div>
+    );
+  };
+
   return (
     <div className="flex flex-col min-h-screen bg-[#312E2B] text-white p-4">
       {error && (
@@ -770,16 +911,8 @@ function Game() {
                   )}
                 </div>
 
-                {/* WebRTC Status Debug Info */}
-                {process.env.NODE_ENV === "development" && (
-                  <div className="text-xs text-gray-400 space-y-1">
-                    <div>WebRTC Ready: {isWebRTCReady ? "✓" : "✗"}</div>
-                    <div>Local Stream: {localStream ? "✓" : "✗"}</div>
-                    <div>Remote Stream: {remoteStream ? "✓" : "✗"}</div>
-                    <div>Is Offerer: {isOfferer ? "✓" : "✗"}</div>
-                    <div>Game ID: {webRTCGameId || "None"}</div>
-                  </div>
-                )}
+                {/* WebRTC Debug Info */}
+                <WebRTCDebugInfo />
               </div>
             )}
 
@@ -973,4 +1106,4 @@ function Game() {
   );
 }
 
-export default Game;
+export default Game;  
