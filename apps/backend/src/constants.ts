@@ -11,7 +11,7 @@ export const INVALID_TURN = "INVALID_TURN"
 export const FORFEIT = "FORFEIT"
 export const DRAW_OFFER = "DRAW_OFFER"
 export const RECONNECT = "RECONNECT"
-
+export const DRAW_ACCEPTED = "DRAW_ACCEPTED"
 // Mediasoup
 export const GET_ROUTER_RTP_CAPABILITIES = 'GET_ROUTER_RTP_CAPABILITIES';
 export const CREATE_WEBRTC_TRANSPORT = 'CREATE_WEBRTC_TRANSPORT';
@@ -19,3 +19,9 @@ export const CONNECT_TRANSPORT = 'CONNECT_TRANSPORT';
 export const PRODUCE = 'PRODUCE';
 export const CONSUME = 'CONSUME';
 export const GET_PRODUCERS = 'GET_PRODUCERS';
+export const ANSWER = "ANSWER"
+export const OFFER = "OFFER"
+export const ICE_CANDIDATES="ICE_CANDIDATES"
+export const START_OFFER = "START_OFFER"
+export const STATUS = "STATUS"
+export const WAITING_FOR_OPPONENT = "WAITING_FOR_OPPONENT"
