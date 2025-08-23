@@ -19,11 +19,21 @@ function useWebRTC(gameId: string, socket: WebSocket | null) {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [isWebRTCReady, setIsWebRTCReady] = useState(false);
+  const [connectionState, setConnectionState] = useState<'disconnected' | 'connecting' | 'connected' | 'failed'>('disconnected');
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
+  const messageQueueRef = useRef<Array<{type: string, payload: any}>>([]);
+
+  // Add message to queue for processing when WebRTC is ready
+  const queueMessage = useCallback((type: string, payload: any) => {
+    console.log(`[Client] Queuing message: ${type}`);
+    messageQueueRef.current.push({ type, payload });
+    console.log(`[Client] Queue size: ${messageQueueRef.current.length}`);
+  }, []);
 
   const startWebRTC = useCallback(async () => {
     try {
       console.log("[Client] Starting WebRTC...");
+      setConnectionState('connecting');
       
       // Get user media
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -90,6 +100,14 @@ function useWebRTC(gameId: string, socket: WebSocket | null) {
       // Handle connection state changes
       peerConnection.onconnectionstatechange = () => {
         console.log('[Client] Connection state:', peerConnection.connectionState);
+        setConnectionState(peerConnection.connectionState as any);
+        
+        if (peerConnection.connectionState === 'connected') {
+          console.log('[Client] WebRTC connection established!');
+        } else if (peerConnection.connectionState === 'failed') {
+          console.error('[Client] WebRTC connection failed');
+          setConnectionState('failed');
+        }
       };
 
       // Handle ICE connection state changes
@@ -101,6 +119,7 @@ function useWebRTC(gameId: string, socket: WebSocket | null) {
       console.log("[Client] WebRTC setup complete");
     } catch (error) {
       console.error("[Client] Error starting WebRTC:", error);
+      setConnectionState('failed');
       throw error;
     }
   }, [gameId, socket]);
@@ -255,19 +274,61 @@ function useWebRTC(gameId: string, socket: WebSocket | null) {
     
     setRemoteStream(null);
     setIsWebRTCReady(false);
+    setConnectionState('disconnected');
+    // Clear message queue on cleanup
+    messageQueueRef.current = [];
     console.log("[Client] WebRTC cleanup complete");
   }, [localStream]);
+
+  // Process queued messages when WebRTC becomes ready
+  useEffect(() => {
+    if (!isWebRTCReady || messageQueueRef.current.length === 0) return;
+    
+    console.log(`[Client] WebRTC is ready, processing ${messageQueueRef.current.length} queued messages`);
+    
+    const processQueue = async () => {
+      const queue = [...messageQueueRef.current]; // Create a copy to avoid modification during processing
+      messageQueueRef.current = []; // Clear the original queue
+      
+      // Process messages in order
+      for (const message of queue) {
+        try {
+          console.log(`[Client] Processing queued message: ${message.type}`);
+          
+          switch (message.type) {
+            case 'OFFER':
+              await handleOffer(message.payload);
+              break;
+            case 'ANSWER':
+              await handleAnswer(message.payload);
+              break;
+            case 'ICE_CANDIDATE':
+              await handleIceCandidate(message.payload);
+              break;
+          }
+        } catch (error) {
+          console.error(`[Client] Error processing queued message ${message.type}:`, error);
+        }
+      }
+      
+      console.log("[Client] Message queue processing complete");
+    };
+    
+    processQueue();
+  }, [isWebRTCReady, handleOffer, handleAnswer, handleIceCandidate]);
 
   return {
     localStream,
     remoteStream,
     isWebRTCReady,
+    connectionState,
     startWebRTC,
     createOffer,
     handleOffer,
     handleAnswer,
     handleIceCandidate,
-    cleanup
+    cleanup,
+    queueMessage
   };
 }
 
@@ -318,7 +379,8 @@ function Game() {
     handleOffer,
     handleAnswer,
     handleIceCandidate,
-    cleanup 
+    cleanup,
+    queueMessage
   } = useWebRTC(webRTCGameId, socket);
 
   const scrollToBottom = () => {
@@ -367,23 +429,35 @@ function Game() {
 
   // Handle offer creation when WebRTC is ready - FIXED with proper delay
   useEffect(() => {
+    console.log("[WebRTC] Offer creation effect triggered:");
+    console.log("[WebRTC] - isWebRTCReady:", isWebRTCReady);
+    console.log("[WebRTC] - isOfferer:", isOfferer);
+    console.log("[WebRTC] - webRTCGameId:", webRTCGameId);
+    console.log("[WebRTC] - socket:", !!socket);
+    console.log("[WebRTC] - socket.readyState:", socket?.readyState);
+    
     if (isWebRTCReady && isOfferer && webRTCGameId && socket && socket.readyState === WebSocket.OPEN) {
-      console.log("Creating offer as offerer - all conditions met");
+      console.log("[WebRTC] Creating offer as offerer - all conditions met");
       
       // Add a small delay to ensure everything is properly initialized
       const timer = setTimeout(() => {
-        console.log("Executing delayed offer creation");
+        console.log("[WebRTC] Executing delayed offer creation");
         createOffer()
           .then(() => {
-            console.log("Offer created and sent successfully");
+            console.log("[WebRTC] Offer created and sent successfully");
           })
           .catch((error) => {
-            console.error("Failed to create offer:", error);
+            console.error("[WebRTC] Failed to create offer:", error);
             setError("Failed to create video call offer");
           });
       }, 1000); // 1 second delay
 
-      return () => clearTimeout(timer);
+      return () => {
+        console.log("[WebRTC] Clearing offer creation timer");
+        clearTimeout(timer);
+      };
+    } else {
+      console.log("[WebRTC] Conditions not met for offer creation");
     }
   }, [isWebRTCReady, isOfferer, createOffer, webRTCGameId, socket]);
 
@@ -410,7 +484,8 @@ function Game() {
             setGameStatus(`Game started! You are playing as ${data.payload.color}`);
             setError(null);
             setShouldStartWebRTC(true);
-            setIsOfferer(false); // This player will receive the offer
+            // Don't override isOfferer here - it was set correctly by START_OFFER message
+            console.log("[WebRTC] Game initialized, preserving isOfferer state:", isOfferer);
             break;
 
           case "START_OFFER":
@@ -454,33 +529,11 @@ function Game() {
                 console.log("Offer handled successfully");
               } catch (error) {
                 console.error("Failed to handle offer:", error);
-                setError("Failed to handle video call offer: " + error.message);
+                setError("Failed to handle video call offer: " + (error as Error).message);
               }
             } else {
-              console.log("WebRTC not ready, waiting and retrying offer...");
-              // Retry mechanism for delayed WebRTC readiness
-              let retries = 0;
-              const maxRetries = 10;
-              const retryInterval = setInterval(async () => {
-                retries++;
-                if (isWebRTCReady) {
-                  console.log(`Retry ${retries}: WebRTC now ready, handling offer`);
-                  clearInterval(retryInterval);
-                  try {
-                    await handleOffer(data.payload);
-                    console.log("Delayed offer handled successfully");
-                  } catch (error) {
-                    console.error("Failed to handle delayed offer:", error);
-                    setError("Failed to handle video call offer: " + error.message);
-                  }
-                } else if (retries >= maxRetries) {
-                  console.error("Max retries reached, WebRTC still not ready");
-                  clearInterval(retryInterval);
-                  setError("WebRTC connection timeout");
-                } else {
-                  console.log(`Retry ${retries}: WebRTC still not ready`);
-                }
-              }, 500);
+              console.log("WebRTC not ready, queuing OFFER message");
+              queueMessage('OFFER', data.payload);
             }
             break;
 
@@ -495,11 +548,11 @@ function Game() {
                 console.log("Answer handled successfully");
               } catch (error) {
                 console.error("Failed to handle answer:", error);
-                setError("Failed to handle video call answer: " + error.message);
+                setError("Failed to handle video call answer: " + (error as Error).message);
               }
             } else {
-              console.error("WebRTC not ready when answer received");
-              setError("WebRTC not ready for answer");
+              console.log("WebRTC not ready, queuing ANSWER message");
+              queueMessage('ANSWER', data.payload);
             }
             break;
 
@@ -517,7 +570,8 @@ function Game() {
                 // Don't show error to user for ICE candidate failures
               }
             } else {
-              console.error("WebRTC not ready when ICE candidate received");
+              console.log("WebRTC not ready, queuing ICE_CANDIDATE message");
+              queueMessage('ICE_CANDIDATE', data.payload);
             }
             break;
 
@@ -599,7 +653,7 @@ function Game() {
         setError("Failed to process server message");
       }
     },
-    [isWebRTCReady, handleOffer, handleAnswer, handleIceCandidate, cleanup, socket]
+    [isWebRTCReady, handleOffer, handleAnswer, handleIceCandidate, cleanup, socket, queueMessage]
   );
 
   useEffect(() => {
